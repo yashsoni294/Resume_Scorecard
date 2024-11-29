@@ -1,0 +1,11 @@
+myenv/
+.env
+__pycache__/
+*.pyc
+*.log
+*.tmp
+
+.ipynb_checkpoints
+
+.DS_Store
+Thumbs.db
