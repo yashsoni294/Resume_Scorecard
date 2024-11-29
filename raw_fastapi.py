@@ -2,6 +2,7 @@ from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
 from PyPDF2 import PdfReader
 from docx import Document
+import win32com.client
 import win32com.client as win32
 import os
 import io
@@ -29,87 +30,134 @@ genai.configure(api_key=API_KEY)
 
 # Constants
 TEMPLATES = {
-    "job_description": """The text below is a job description:
+    "job_description": """
+        
+        The text below is a job description:
 
-            {job_description_text}
+        {job_description_text}
 
-            Your task is to summarize the job description by focusing on the following areas:
+        Your task is to analyze the job description and extract key aspects that will help evaluate a candidate's suitability. Organize the extracted information into the following categories to support scoring. Also Avoid including unnecessary details or assumptions on your own :
 
-            ### 1. **Role Requirements**
-            - What are the primary responsibilities and duties expected in this role?
-            - What specific experiences or industry backgrounds are preferred or required?
+        1. Candidate Profile :-
+            Job-Related Keywords:
+            Extract the most relevant keywords and phrases used in the job description, such as specific skills, technologies, or qualifications, that highlight the core expectations for the role.
 
-            ### 2. **Core Skills and Technical Expertise**
-            - What technical and soft skills are required or preferred for this role?
-            - Is there any emphasis on proficiency level or depth in these skills?
+            Relevant Past Roles and Responsibilities:
+            Identify the types of roles and responsibilities that align closely with this position, based on the job description.
 
-            ### 3. **Additional Requirements or Preferences**
-            - Are there any other relevant requirements, such as language proficiency, travel, or work authorization?
-            - Are there specific personality traits, work styles, or soft skills emphasized?
+            Actionable Responsibilities:
+            List clear, action-oriented tasks or expectations (e.g., "Develop and manage X," "Collaborate on Y") that indicate measurable outcomes for success in this role.
 
-            Provide a concise summary based on these criteria, ensuring that no extraneous information is added. This summary will be used for evaluating candidate resumes. 
+        2. Experience Section :-
+            Years of Experience:
+            Specify the minimum and preferred years of experience required or desired for the role.
+
+            Technical Skills:
+            Extract a comprehensive list of both mandatory and preferred technical skills, including tools, technologies, programming languages, or domain-specific expertise mentioned in the job description.
+
+            Soft Skills and Teamwork:
+            Identify soft skills and teamwork-related requirements (e.g., leadership, communication, collaboration), with examples if provided in the description.
+
+        3. Educational Qualifications and Certifications :- 
+            Minimum Educational Qualifications:
+            Note the required or preferred educational qualifications for this role.
+
+            Relevant Certifications/Training Programs:
+            List certifications, licenses, or training programs that are directly or partially relevant to the job description.
+
+            Output:
+            Provide the extracted information in a concise, bullet-pointed format, ensuring relevance to the scoring criteria. Avoid including unnecessary details or assumptions on your own. This structured output will guide the scoring process.        
             """,
+
     "resume":""" 
             The text below is a resume:
 
             {resume_text}
 
-            Your task is to summarize the resume by focusing on the following areas:
+            Your task is to extract information from the resume by focusing on the following areas. Ensure the extracted information is clear, structured, and concise also Ensure the output focuses only on the resume content without making assumptions or adding extra information from your own :
 
-            ### 1. **Experience Relevance** 
-            - Does the candidate have relevant role-specific and industry experience? 
-            - How much experience does the candidate has and in which Domain ?
+            ### 1. **Candidate Profile**
+            - **Keywords Identified:** List relevant keywords found in the resume that reflect the candidate skills, roles, and expertise.  
+            - **Past Roles Summary:** Provide an overview of the candidate's past roles and responsibilities, emphasizing their clarity and detail. Highlight the use of action words (e.g., "Developed," "Managed") and measurable outcomes.  
+            - **Clarity of Responsibilities:** Note how clearly responsibilities are described, focusing on structured descriptions and measurable achievements.
 
-            ### 2. **Skills Alignment**
-            - What core technical skills are demonstrated? 
-            - How proficient is the candidate in these skills?
+            ### 2. **Experience Section**
+            - **Years of Experience:** Indicate the total years of experience and specify industries or domains the candidate has worked in.  
+            - **Technical Skills:** Identify technical skills explicitly mentioned in the resume, along with any supporting examples or certifications.  
+            - **Communication and Teamwork Skills:** Highlight references to teamwork and communication skills, particularly examples such as leadership roles, collaboration efforts, or achievements in group settings.
 
-            ### 3. **Education & Certifications**
-            - Does the candidate meet educational requirements? 
-            - Are there any relevant certifications or additional learning?
+            ### 3. **Educational Qualifications and Certifications**
+            - **Educational Background:** Provide the highest qualification achieved and any notable academic achievements.  
+            - **Certifications and Training:** List certifications or training programs mentioned in the resume, along with their relevance to enhancing the candidate expertise.
 
-            Provide a brief and focused summary based on these criteria. Also remember your given summary will be used for 
-            evaluating the resume so do not add any extra information.
+            Provide a structured summary of the extracted information in bullet points or short sentences for each section.
+
             """,
     "score": """
-        Your task is to evaluate how well the provided resume aligns with the given job description by assessing three key factors: skills, experience, and education. Based on this evaluation, provide a final score between 0 and 100, representing the overall suitability of the candidate for the job.
+        Your task is to evaluate how well the provided resume aligns with the given job description by assessing three key factors: 1. Candidate Profile 2. Experience section 3. Educational Qualifications and Certifications. Based on this evaluation, provide a final score between 0 and 100, representing the overall suitability of the candidate for the job.
 
         ### Inputs:
         - **Resume Text:**  
+
         {resume_text}
 
         - **Job Description Text:**  
+
         {job_description}
 
         ### Scoring Guidelines:
-        Evaluate the resume against the job description across the following three dimensions. Provide a score for each dimension on a scale of 0 to 100:
+        Give marks to the resume against the job description across the following criterias :-
 
-        1. **Skills Alignment (0-100):**  
-        Assess how well the skills mentioned in the resume match the skills required in the job description. Consider technical, soft, and specialized skills.
+        1. Candidate Profile (Max 15 Marks) :-
 
-        2. **Experience Alignment (0-100):**  
-        Compare the candidate work experience with the requirements outlined in the job description. Focus on factors such as relevance, industry alignment, and duration of experience.
+            •	Job-Related Keywords (Max 5 Marks):
+                o	5 Points: IF Resume includes highly relevant keywords from the Job Description, indicating alignment with job requirements.
+                o	3 Points: IF Resume Includes some relevant keywords but lacks critical ones from the Job Description.
+                o	1 Point: IF Few or no relevant keywords used.
+            •	Relevance of Past Roles to Job Description (Max 5 Marks):
+                o	5 Points: IF Past roles and responsibilities align strongly with Job Description requirements.
+                o	3 Points: IF Moderate alignment, some responsibilities match the Job Description.
+                o	1 Point: IF Weak or no relevance to the Job Description.
+            •	Clarity of Responsibilities (Max 5 Marks):
+                o	5 Points: IF Responsibilities are clearly defined using action words (e.g., "Developed," "Managed") and measurable outcomes.
+                o	3 Points: IF Responsibilities are described but lack action words or outcomes.
+                o	1 Point: IF Responsibilities are vague or generic.
+        
+        2. Experience section (Max 65) :- 
 
-        3. **Education Alignment (0-100):**  
-        Evaluate the candidate's educational background against the academic qualifications specified in the job description. Consider the field of study, degree level, and institution if applicable.
+            • Years of Experience (Max 15 Marks):
+                o	15 Points: IF Experience matches or exceeds the Job Description requirements.
+                o	10 Points: IF Slightly below required years but relevant experience.
+                o	5 Points: IF Limited relevance or inadequate years of experience.
+            • Matching Technical Skills (Max 40 Marks):
+                o	40 Points: IF All technical skills mentioned in the Job Description are evident, with examples or certifications provided.
+                o	30 Points: IF Most technical skills are evident but lack depth or examples.
+                o	20 Points: IF Some technical skills match; others are missing.
+                o	10 Points or Below: IF Minimal or no alignment with required technical skills.
+            • Communication and Teamwork (Max 10 Marks):
+                o	10 Points: IF Resume highlights soft skills with examples (e.g., "Led a team of 5," "Facilitated cross-functional communication").
+                o	6 Points: IF Mentions soft skills but lacks examples.
+                o	3 Points: IF Minimal mention of soft skills.
 
-        ### Final Score Calculation:
-        Calculate the weighted average of the three scores based on the following weights:
-            - Experience: 40%
-            - Skills: 40%
-            - Education: 20%
+        3. Educational Qualifications and Certifications (Max 20) :- 
+                
+            • Meets Minimum Educational Qualifications (Max 15 Marks):
+                o	15 Points: IF Meets or exceeds educational qualifications specified in the Job Description.
+                o	10 Points: IF Meets basic qualifications but lacks advanced or desired qualifications.
+                o	5 Points: IF Does not fully meet educational qualifications.
+            • Additional Certifications/Training Programs (Max 5 Marks):
+                o	5 Points: IF Certifications/training directly related to Job Description (e.g., HR certifications, technical tools training).
+                o	3 Points: IF Certifications or training partially relevant to the Job Description.
+                o	1 Point: IF No additional certifications.
 
-        Formula:  
-        Final Score = (Experience Score * 0.4) + (Skills Score * 0.4)  + (Education Score * 0.2)
-
-        Round the result to the nearest whole number.
+        Add marks of all Three section (Candidate Profile, Experience section, Educational Qualifications and Certifications) Round the result to the nearest whole number.
 
         ### Output:
         Provide only the final average score as a single number (0-100) with no additional text or explanation.
+        Never give any text as output give 0 score instead.
     """
     ,
 }
-
 
 app = FastAPI()
 
@@ -212,7 +260,58 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
             file_extension = file.filename.split(".")[-1].lower()
 
             if file.content_type == "application/zip" or file_extension == "zip":
-                pass
+                zip_data = await file.read()
+                zip_file = io.BytesIO(zip_data)
+                extracted_files = []
+                with zipfile.ZipFile(zip_file, 'r') as z:
+                    # Create a directory for extracted files (optional)
+                    extract_path = "extracted_files"
+                    os.makedirs(extract_path, exist_ok=True)
+                    
+                    # Extract files
+                    z.extractall(extract_path)
+                    extracted_files = z.namelist()
+
+                pdf_contents = {}
+                for file_name in extracted_files:
+                    file_path = os.path.join(extract_path, file_name)
+                    if file_name.endswith(".pdf"):
+                        file_path = os.path.join(extract_path, file_name)
+                        with open(file_path, "rb") as pdf_file:
+                            reader = PdfReader(pdf_file)
+                            text = ""
+                            for page in reader.pages:
+                                text += page.extract_text()
+                            # pdf_contents[file_name] = text
+                            response_data[file_name] = {"content": text}
+                    
+                    # Process TXT files
+                    elif file_name.endswith(".txt"):
+                        with open(file_path, "r", encoding="utf-8") as txt_file:
+                            text = txt_file.read()
+                            response_data[file_name] = {"content": text}
+
+                    elif file_name.endswith(".docx"):
+                        try:
+                            doc = Document(file_path)
+                            text = "\n".join([paragraph.text for paragraph in doc.paragraphs])
+                            response_data[file_name] = {"content": text}
+                        except Exception as e:
+                            response_data[file_name] = {"content": e}
+
+                    # Process DOC files
+                    elif file_name.endswith(".doc"):
+                        try:
+                            word = win32com.client.Dispatch("Word.Application")
+                            doc = word.Documents.Open(os.path.abspath(file_path))
+                            text = doc.Content.Text
+                            doc.Close()
+                            word.Quit()
+                            response_data[file_name] = {"content": text}  # Extracted text
+                        except Exception as e:
+                            response_data[file_name] = {"content": f"Error reading DOC file: {str(e)}"}
+
+
                 # response_data[file.filename] = process_zip(file)
             elif file.content_type in ["application/x-rar-compressed", "application/vnd.rar"] or file_extension == "rar":
                 # response_data[file.filename] = process_rar(file)
@@ -264,105 +363,3 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
 
     return response_data
 
-
-
-
-
-
-
-# from fastapi import FastAPI, File, UploadFile
-# from fastapi.responses import JSONResponse
-# from PyPDF2 import PdfReader
-# from docx import Document
-# import win32com.client as win32
-# import os
-# import io
-
-# app = FastAPI()
-
-# def read_pdf(file: UploadFile):
-#     """Extract text from a PDF file."""
-#     contents = file.file.read()
-#     pdf_reader = PdfReader(io.BytesIO(contents))
-#     extracted_text = ""
-#     for page in pdf_reader.pages:
-#         extracted_text += page.extract_text()
-#     return extracted_text.strip()
-
-# def read_docx(file: UploadFile):
-#     """Extract text from a DOCX file."""
-#     contents = file.file.read()
-#     document = Document(io.BytesIO(contents))
-#     extracted_text = ""
-#     for paragraph in document.paragraphs:
-#         extracted_text += paragraph.text + "\n"
-#     return extracted_text.strip()
-
-# def read_doc(file: UploadFile):
-#     """
-#     Extract text from a DOC file using COM automation (Windows only).
-#     """
-#     try:
-#         # Save the uploaded file temporarily
-#         temp_doc_path = file.filename
-#         with open(temp_doc_path, "wb") as temp_file:
-#             temp_file.write(file.file.read())
-
-#         # Use COM automation to extract text
-#         word = win32.Dispatch("Word.Application")
-#         word.Visible = False
-#         doc = word.Documents.Open(os.path.abspath(temp_doc_path))
-#         extracted_text = doc.Content.Text
-#         doc.Close(False)
-#         word.Quit()
-
-#         # Clean up the temporary file
-#         os.remove(temp_doc_path)
-
-#         return extracted_text.strip()
-#     except Exception as e:
-#         return f"Error processing DOC file: {str(e)}"
-
-# def read_txt(file: UploadFile):
-#     """Extract text from a plain text file."""
-#     try:
-#         contents = file.file.read()
-#         return contents.decode("utf-8").strip()
-#     except Exception as e:
-#         return f"Error processing TXT file: {str(e)}"
-
-# @app.post("/upload-files/")
-# async def upload_files(files: list[UploadFile] = File(...)):
-#     response_data = []
-
-#     for file in files:
-#         try:
-#             if file.content_type == "application/pdf":
-#                 extracted_text = read_pdf(file)
-#             elif file.content_type in ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/msword"]:
-#                 if file.filename.endswith(".docx"):
-#                     extracted_text = read_docx(file)
-#                 elif file.filename.endswith(".doc"):
-#                     extracted_text = read_doc(file)
-#                 else:
-#                     raise ValueError("Unsupported Word file format.")
-#             elif file.content_type == "text/plain":
-#                 extracted_text = read_txt(file)
-#             else:
-#                 return JSONResponse(
-#                     content={"error": f"Unsupported file type for {file.filename}. Supported formats are .pdf, .docx, .doc, and .txt."},
-#                     status_code=400,
-#                 )
-
-#             response_data.append({
-#                 "filename": file.filename,
-#                 "content": extracted_text
-#             })
-
-#         except Exception as e:
-#             response_data.append({
-#                 "filename": file.filename,
-#                 "error": str(e)
-#             })
-
-#     return response_data
