@@ -1,39 +1,21 @@
-from fastapi import FastAPI, File, UploadFile
-from io import BytesIO
 import os
-import time
-from typing import List
-from PyPDF2 import PdfReader
-from docx import Document
-import win32com.client as win32
-from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import JSONResponse
-from PyPDF2 import PdfReader
-from docx import Document
-import win32com.client as win32
-import os
-import io
-import zipfile
-import rarfile  # Import rarfile library
-import os
+from dotenv import load_dotenv
+import openai
 import PyPDF2
 import pandas as pd
 import docx
 import win32com.client as win32
-import time
 import tkinter as tk
 from tkinter import filedialog
-from dotenv import load_dotenv
-import google.generativeai as genai
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.prompts import PromptTemplate
+from langchain.prompts import PromptTemplate
 from datetime import datetime
+import threading
+from queue import Queue
 
-# Load API Key
+# Load environment variables
 load_dotenv()
-API_KEY = os.getenv("GOOGLE_API_KEY")
-genai.configure(api_key=API_KEY)
-
+API_KEY = os.getenv("OPENAI_API_KEY")
+openai.api_key = API_KEY
 
 # Constants
 TEMPLATES = {
@@ -195,148 +177,174 @@ TEMPLATES = {
             Ensure that scoring accounts for both the breadth and depth of alignment between the resume and job description.
             Emphasize evidence-backed qualifications and experience to avoid scoring inflated or unsupported claims.
         Output:
-            Provide the final calculated score as a single whole number (0 – 100) with no additional explanation or text. If you are not able to score the resume then you can give 0 score to the resume
+            Provide the final calculated score as a single whole number (0 – 100) with no additional explanation or text.
+            Never provide text explanation as Output give 0 Score Instead.
         """
 
 }
 
+NUM_THREADS = os.cpu_count()
 
-app = FastAPI()
 
-def get_conversation(template: str):
-    """
-    Initializes a conversation using a template and LangChain's LLM integration.
-    """
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
-        temperature=0.1,
-        max_tokens=None,
-        timeout=None,
-        max_retries=3
-    )
-    prompt = PromptTemplate.from_template(template)
-    return prompt | llm
+def initialize_openai_prompt(template, model="gpt-4o-mini", temperature=0.1, max_tokens=None):
+    """Initializes an OpenAI completion function based on a template."""
+    def call_model(inputs):
+        prompt = PromptTemplate.from_template(template).format(**inputs)
+        response = openai.ChatCompletion.create(
+            model=model,
+            messages=[{"role": "system", "content": prompt}],
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return response["choices"][0]["message"]["content"]
+    return call_model
 
-def read_pdf(file: BytesIO) -> str:
-    """Extract text from a PDF file."""
+
+def select_folder():
+    """Prompts the user to select a folder."""
+    root = tk.Tk()
+    root.withdraw()
+    return filedialog.askdirectory(title="Select Folder").replace('/', '\\')
+
+
+def read_pdf(file_path):
+    """Reads text from a PDF file."""
     try:
-        pdf_reader = PdfReader(file)
-        extracted_text = "".join([page.extract_text() for page in pdf_reader.pages])
-        return extracted_text.strip()
+        with open(file_path, 'rb') as file:
+            reader = PyPDF2.PdfReader(file)
+            return ''.join(page.extract_text() for page in reader.pages)
     except Exception as e:
-        return f"Error processing PDF: {str(e)}"
+        print(f"Error reading PDF {file_path}: {e}")
+        return ""
 
-def read_docx(file: BytesIO) -> str:
-    """Extract text from a DOCX file."""
+
+def read_txt(file_path):
+    """Reads text from a TXT file."""
     try:
-        document = Document(file)
-        extracted_text = "\n".join([paragraph.text for paragraph in document.paragraphs])
-        return extracted_text.strip()
+        with open(file_path, 'r', encoding='utf-8') as file:
+            return file.read()
     except Exception as e:
-        return f"Error processing DOCX: {str(e)}"
+        print(f"Error reading TXT {file_path}: {e}")
+        return ""
 
-def read_doc(file_path: str) -> str:
-    """Extract text from a DOC file using COM automation (Windows only)."""
+
+def read_docx(file_path):
+    """Reads text from a DOCX file."""
+    try:
+        doc = docx.Document(file_path)
+        return "\n".join(paragraph.text for paragraph in doc.paragraphs)
+    except Exception as e:
+        print(f"Error reading DOCX {file_path}: {e}")
+        return ""
+
+
+def read_doc(file_path):
+    """Reads text from a DOC file."""
     try:
         word = win32.Dispatch("Word.Application")
         word.Visible = False
-        doc = word.Documents.Open(os.path.abspath(file_path))
-        extracted_text = doc.Content.Text
+        doc = word.Documents.Open(file_path)
+        text = doc.Content.Text
         doc.Close(False)
         word.Quit()
-        return extracted_text.strip()
+        return text
     except Exception as e:
-        return f"Error processing DOC file: {str(e)}"
+        print(f"Error reading DOC {file_path}: {e}")
+        return ""
 
-def read_txt(file: BytesIO) -> str:
-    """Extract text from a plain text file."""
-    try:
-        return file.read().decode("utf-8").strip()
-    except Exception as e:
-        return f"Error processing TXT file: {str(e)}"
 
-def process_file(file_name: str, file_content: bytes) -> str:
-    """
-    Determine the file type and extract text based on its format.
-    """
-    file_extension = file_name.split(".")[-1].lower()
-    file_stream = BytesIO(file_content)
+def extract_text_from_files(folder_path):
+    """Extracts text from all files in a folder using multithreading."""
+    file_queue = Queue()
+    data = []
 
-    if file_extension == "pdf":
-        return read_pdf(file_stream)
-    elif file_extension == "docx":
-        return read_docx(file_stream)
-    elif file_extension == "doc":
-        temp_file_path = f"temp_{file_name}"
-        with open(temp_file_path, "wb") as temp_file:
-            temp_file.write(file_content)
-        extracted_text = read_doc(temp_file_path)
-        os.remove(temp_file_path)
-        return extracted_text
-    elif file_extension == "txt":
-        return read_txt(file_stream)
-    else:
-        pass
+    for filename in os.listdir(folder_path):
+        file_queue.put(os.path.join(folder_path, filename))
 
-async def process_files(files: List[UploadFile], job_description: str) -> dict:
-    """
-    Process uploaded files and extract text.
-    """
-    response_data = {}
+    def threaded_reader(queue, data_list):
+        while not queue.empty():
+            file_path = queue.get()
+            filename = os.path.basename(file_path)
+            try:
+                if filename.endswith('.pdf'):
+                    text = read_pdf(file_path)
+                elif filename.endswith('.docx'):
+                    text = read_docx(file_path)
+                elif filename.endswith('.doc'):
+                    text = read_doc(file_path)
+                elif filename.endswith('.txt'):
+                    text = read_txt(file_path)
+                else:
+                    continue
+                data_list.append({'resume_file_name': filename, 'resume_file_text': text})
+            except Exception as e:
+                print(f"Error processing file {filename}: {e}")
+            finally:
+                queue.task_done()
 
-    conversation_jd = get_conversation(TEMPLATES["job_description"])
-    jd_response = conversation_jd.invoke({"job_description_text": job_description})
-    processed_jd = jd_response.content
-    print(processed_jd)
+    threads = [threading.Thread(target=threaded_reader, args=(file_queue, data)) for _ in range(NUM_THREADS)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
 
-    for file in files:
-        try:
-            file_content = await file.read()
-            extracted_text = process_file(file.filename, file_content)
-            response_data[file.filename] = {"content": extracted_text}
-        except Exception as e:
-            response_data[file.filename] = {"error": str(e)}
+    return pd.DataFrame(data)
 
-    return response_data
 
-async def score_resumes(response_data: dict, job_description: str) -> dict:
-    """
-    Score resumes based on job description.
-    """
-    conversation_resume = get_conversation(TEMPLATES["resume"])
-    conversation_score = get_conversation(TEMPLATES["score"])
+def process_resumes(resume_df, job_description):
+    """Processes resumes to extract key aspects and scores."""
+    jd_processor = initialize_openai_prompt(TEMPLATES["job_description"])
+    resume_processor = initialize_openai_prompt(TEMPLATES["resume"])
+    score_processor = initialize_openai_prompt(TEMPLATES["score"])
 
-    for filename, file_data in response_data.items():
-        resume_response = conversation_resume.invoke({"resume_text": file_data["content"]})
-        time.sleep(3)  # Introducing delay to avoid rate limiting
+    processed_jd = jd_processor({"job_description_text": job_description})
 
-        file_data["key_feature"] = resume_response.content
+    def threaded_processor(queue, results):
+        while not queue.empty():
+            index, resume = queue.get()
+            try:
+                resume_text = resume["resume_file_text"]
+                key_aspect = resume_processor({"resume_text": resume_text})
+                score = score_processor({"resume_text": resume_text, "job_description": processed_jd})
+                results[index] = {"resume_key_aspect": key_aspect, "resume_score": score}
+            except Exception as e:
+                print(f"Error processing resume {resume['resume_file_name']}: {e}")
+            finally:
+                queue.task_done()
 
-        score_response = conversation_score.invoke({
-            "resume_text": resume_response.content,
-            "job_description": job_description
-        })
-        time.sleep(3)  # Introducing delay to avoid rate limiting
+    resume_queue = Queue()
+    for i, row in resume_df.iterrows():
+        resume_queue.put((i, row))
 
-        file_data["score"] = score_response.content
-        print(f"{filename}: {score_response.content}")
+    results = {}
+    threads = [threading.Thread(target=threaded_processor, args=(resume_queue, results)) for _ in range(NUM_THREADS)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
 
-    return response_data
+    for index, result in results.items():
+        resume_df.loc[index, "resume_key_aspect"] = result["resume_key_aspect"]
+        resume_df.loc[index, "resume_score"] = result["resume_score"]
 
-@app.post("/upload-files/")
-async def upload_files(job_description: str, files: List[UploadFile] = File(...)):
-    """
-    Handle file uploads and process resumes based on the job description.
-    """
-    try:
-        # Step 1: Process the uploaded files
-        response_data = await process_files(files, job_description)
+    return resume_df
 
-        # Step 2: Score the resumes
-        scored_data = await score_resumes(response_data, job_description)
 
-        return scored_data
+def save_results(resume_df):
+    """Saves results to an Excel file."""
+    resume_df.sort_values(by='resume_score', ascending=False, inplace=True)
+    downloads_folder = os.path.join(os.path.expanduser("~"), "Downloads")
+    timestamp = datetime.now().strftime("%d-%b-%Y_%I-%M-%S_%p")
+    file_path = os.path.join(downloads_folder, f'resume_scorecard_{timestamp}.xlsx')
+    resume_df.to_excel(file_path, index=False)
+    print(f"Results saved to {file_path}")
 
-    except Exception as e:
-        return {"error": f"Error processing files: {str(e)}"}
 
+if __name__ == "__main__":
+    folder_path = select_folder()
+    print(f"The resumes are selected from: {folder_path}")
+    job_description = input("Please enter the job description: ")
+
+    resumes = extract_text_from_files(folder_path)
+    processed_resumes = process_resumes(resumes, job_description)
+    save_results(processed_resumes)

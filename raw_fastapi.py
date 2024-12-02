@@ -3,16 +3,10 @@ from fastapi.responses import JSONResponse
 from PyPDF2 import PdfReader
 from docx import Document
 import win32com.client
-import win32com.client as win32
 import os
 import io
 import zipfile
-import rarfile  # Import rarfile library
-import os
-import PyPDF2
 import pandas as pd
-import docx
-import win32com.client as win32
 import time
 import tkinter as tk
 from tkinter import filedialog
@@ -239,8 +233,7 @@ def process_file(file_name: str, file_content: bytes):
             return text
         elif file_extension == "txt":
             return read_txt(file_stream)
-        else:
-            return f"Unsupported file type: {file_name}"
+        
     except Exception as e:
         return f"Error processing file {file_name}: {str(e)}"
 
