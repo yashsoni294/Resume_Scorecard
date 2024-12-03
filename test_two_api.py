@@ -246,10 +246,11 @@ def read_txt(file: io.BytesIO):
         return f"Error processing TXT file: {str(e)}"
 
 
-
 @app.post("/upload-files/")
 async def upload_files(job_description: str, files: list[UploadFile] = File(...)):
     response_data = {}
+    extract_path = "extracted_files"
+    os.makedirs(extract_path, exist_ok=True)  # Ensure the directory exists
 
     conversation_jd = get_conversation(TEMPLATES["job_description"])
     jd_response = conversation_jd.invoke({"job_description_text": job_description})
@@ -258,103 +259,57 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
 
     for file in files:
         try:
-            # Fallback to file extension if MIME type is not reliable
+            # Determine the file extension
             file_extension = file.filename.split(".")[-1].lower()
+            file_path = os.path.join(extract_path, file.filename)
 
+            # Save the file to the extracted_files folder
+            with open(file_path, "wb") as f:
+                file_data = await file.read()  # Read the file asynchronously
+                f.write(file_data)           # Write the file data
+
+            # Process the file based on its type
             if file.content_type == "application/zip" or file_extension == "zip":
-                zip_data = await file.read()
-                zip_file = io.BytesIO(zip_data)
-                extracted_files = []
-                with zipfile.ZipFile(zip_file, 'r') as z:
-                    # Create a directory for extracted files (optional)
-                    extract_path = "extracted_files"
-                    os.makedirs(extract_path, exist_ok=True)
-                    
-                    # Extract files
-                    z.extractall(extract_path)
-                    extracted_files = z.namelist()
-
-                pdf_contents = {}
-                for file_name in extracted_files:
-                    file_path = os.path.join(extract_path, file_name)
-                    if file_name.endswith(".pdf"):
-                        file_path = os.path.join(extract_path, file_name)
-                        with open(file_path, "rb") as pdf_file:
-                            reader = PdfReader(pdf_file)
-                            text = ""
-                            for page in reader.pages:
-                                text += page.extract_text()
-                            # pdf_contents[file_name] = text
-                            response_data[file_name] = {"content": text}
-                    
-                    # Process TXT files
-                    elif file_name.endswith(".txt"):
-                        with open(file_path, "r", encoding="utf-8") as txt_file:
-                            text = txt_file.read()
-                            response_data[file_name] = {"content": text}
-
-                    elif file_name.endswith(".docx"):
-                        try:
-                            doc = Document(file_path)
-                            text = "\n".join([paragraph.text for paragraph in doc.paragraphs])
-                            response_data[file_name] = {"content": text}
-                        except Exception as e:
-                            response_data[file_name] = {"content": e}
-
-                    # Process DOC files
-                    elif file_name.endswith(".doc"):
-                        try:
-                            word = win32com.client.Dispatch("Word.Application")
-                            doc = word.Documents.Open(os.path.abspath(file_path))
-                            text = doc.Content.Text
-                            doc.Close()
-                            word.Quit()
-                            response_data[file_name] = {"content": text}  # Extracted text
-                        except Exception as e:
-                            response_data[file_name] = {"content": f"Error reading DOC file: {str(e)}"}
-
-
-                # response_data[file.filename] = process_zip(file)
-            elif file.content_type in ["application/x-rar-compressed", "application/vnd.rar"] or file_extension == "rar":
-                # response_data[file.filename] = process_rar(file)
-                pass
+                with zipfile.ZipFile(file_path, 'r') as z:
+                    z.extractall(extract_path)  # Extract ZIP contents to the same directory
+                    for extracted_file in z.namelist():
+                        print(f"Extracted: {os.path.join(extract_path, extracted_file)}")
             elif file.content_type == "application/pdf" or file_extension == "pdf":
-                extracted_text = read_pdf(io.BytesIO(file.file.read()))
-                response_data[file.filename] = {"content": extracted_text}
+                with open(file_path, "rb") as pdf_file:
+                    reader = PdfReader(pdf_file)
+                    text = "".join(page.extract_text() for page in reader.pages)
+                    response_data[file.filename] = {"content": text}
             elif file.content_type in ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/msword"] or file_extension in ["docx", "doc"]:
                 if file_extension == "docx":
-                    extracted_text = read_docx(io.BytesIO(file.file.read()))
+                    doc = Document(file_path)
+                    text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
                 elif file_extension == "doc":
-                    temp_file_path = f"temp_{file.filename}"
-                    with open(temp_file_path, "wb") as temp_file:
-                        temp_file.write(file.file.read())
-                    extracted_text = read_doc(temp_file_path)
-                    os.remove(temp_file_path)
-                else:
-                    raise ValueError("Unsupported Word file format.")
-                response_data[file.filename] = {"content": extracted_text}
+                    word = win32com.client.Dispatch("Word.Application")
+                    doc = word.Documents.Open(os.path.abspath(file_path))
+                    text = doc.Content.Text
+                    doc.Close()
+                    word.Quit()
+                response_data[file.filename] = {"content": text}
             elif file.content_type == "text/plain" or file_extension == "txt":
-                extracted_text = read_txt(io.BytesIO(file.file.read()))
-                response_data[file.filename] = {"content": extracted_text}
+                with open(file_path, "r", encoding="utf-8") as txt_file:
+                    text = txt_file.read()
+                response_data[file.filename] = {"content": text}
             else:
                 response_data[file.filename] = {
-                    "error": "Unsupported file type. Supported formats: .pdf, .docx, .doc, .txt, .zip, .rar"
+                    "error": "Unsupported file type. Supported formats: .pdf, .docx, .doc, .txt, .zip"
                 }
-
         except Exception as e:
-            response_data[file.filename] = {
-                "error": str(e)
-            }
+            response_data[file.filename] = {"error": str(e)}
+
+
+    # Process resumes and score them
     conversation_resume = get_conversation(TEMPLATES["resume"])
     conversation_score = get_conversation(TEMPLATES["score"])
     for filename in response_data:
-        print(f"{filename}") #: {response_data[filename]["content"]}
-
+        print(f"{filename}: {response_data[filename].get('content', '')}")
         resume_response = conversation_resume.invoke({"resume_text": response_data[filename]["content"]})
         time.sleep(3)
-        # print(resume_response.content)
         response_data[filename]["key_feature"] = resume_response.content
-        # response_data[filename] = {"key_aspect": resume_response.content}
         score_response = conversation_score.invoke({
             "resume_text": resume_response.content,
             "job_description": processed_jd
