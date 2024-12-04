@@ -418,58 +418,60 @@ def extract_text_from_files(folder_path):
     # Convert the data into a pandas DataFrame and returns.
     return pd.DataFrame(data)
 
-def process_resumes(resume_df, job_description):
-    """
-    Processes a DataFrame of resumes by extracting key aspects and scoring them 
-    based on a given job description.
+# IF YOU DO NOT WANT TO USE THREADING APPROACH THEN YOU CAN USE BELOW COMMENTED FUNCTION
 
-    This function uses OpenAI models to:
-    1. Process the job description to identify its key aspects.
-    2. Extract key aspects from each resume.
-    3. Score each resume based on its relevance to the processed job description.
+# def process_resumes(resume_df, job_description):
+#     """
+#     Processes a DataFrame of resumes by extracting key aspects and scoring them 
+#     based on a given job description.
 
-    Args:
-        resume_df (pd.DataFrame): A DataFrame containing resumes with columns:
-            - 'resume_file_text': The text content of each resume.
-            - 'resume_file_name': The name of each resume file.
-        job_description (str): The text of the job description to analyze.
+#     This function uses OpenAI models to:
+#     1. Process the job description to identify its key aspects.
+#     2. Extract key aspects from each resume.
+#     3. Score each resume based on its relevance to the processed job description.
 
-    Returns:
-        pd.DataFrame: The updated DataFrame with additional columns:
-            - 'resume_key_aspect': Key aspects extracted from each resume.
-            - 'resume_score': Relevance score of each resume to the job description.
-    """
+#     Args:
+#         resume_df (pd.DataFrame): A DataFrame containing resumes with columns:
+#             - 'resume_file_text': The text content of each resume.
+#             - 'resume_file_name': The name of each resume file.
+#         job_description (str): The text of the job description to analyze.
 
-    # Initialize the OpenAI conversation for job description processing
-    conversation_jd = get_conversation_openai(TEMPLATES["job_description"])
-    jd_response = conversation_jd({"job_description_text": job_description})
-    processed_jd = jd_response # Store the processed job description
+#     Returns:
+#         pd.DataFrame: The updated DataFrame with additional columns:
+#             - 'resume_key_aspect': Key aspects extracted from each resume.
+#             - 'resume_score': Relevance score of each resume to the job description.
+#     """
 
-    # Initialize OpenAI conversations for resume processing and scoring
-    conversation_resume = get_conversation_openai(TEMPLATES["resume"])
-    conversation_score = get_conversation_openai(TEMPLATES["score"])
+#     # Initialize the OpenAI conversation for job description processing
+#     conversation_jd = get_conversation_openai(TEMPLATES["job_description"])
+#     jd_response = conversation_jd({"job_description_text": job_description})
+#     processed_jd = jd_response # Store the processed job description
 
-    # Iterate through each resume in the DataFrame
-    for i in range(len(resume_df)):
-        # Extract the text content of the current resume
-        resume_text = resume_df.loc[i, "resume_file_text"]
+#     # Initialize OpenAI conversations for resume processing and scoring
+#     conversation_resume = get_conversation_openai(TEMPLATES["resume"])
+#     conversation_score = get_conversation_openai(TEMPLATES["score"])
+
+#     # Iterate through each resume in the DataFrame
+#     for i in range(len(resume_df)):
+#         # Extract the text content of the current resume
+#         resume_text = resume_df.loc[i, "resume_file_text"]
         
-        # Extract key aspects from the resume
-        resume_response = conversation_resume({"resume_text": resume_text})
-        resume_df.loc[i, "resume_key_aspect"] = resume_response
+#         # Extract key aspects from the resume
+#         resume_response = conversation_resume({"resume_text": resume_text})
+#         resume_df.loc[i, "resume_key_aspect"] = resume_response
         
-        # Score the resume based on the processed job description
-        score_response = conversation_score({
-            "resume_text": resume_text,
-            "job_description": processed_jd
-        })
-        resume_df.loc[i, "resume_score"] = score_response
+#         # Score the resume based on the processed job description
+#         score_response = conversation_score({
+#             "resume_text": resume_response,
+#             "job_description": processed_jd
+#         })
+#         resume_df.loc[i, "resume_score"] = score_response
 
-        # Log progress to the console
-        print(f"{i+1}. Working on - ",resume_df["resume_file_name"][i])
+#         # Log progress to the console
+#         print(f"{i+1}. Working on - ",resume_df["resume_file_name"][i])
 
-    # Return the updated DataFrame
-    return resume_df
+#     # Return the updated DataFrame
+#     return resume_df
 
 def save_results(resume_df):
     """
@@ -558,7 +560,7 @@ def threaded_resume_processor(resume_queue, job_description, results):
 
             # Calculate the resume score based on the processed job description
             score_response = conversation_score({
-                "resume_text": resume_text,
+                "resume_text": resume_response,
                 "job_description": processed_jd
             })
 
