@@ -495,7 +495,7 @@ def save_results(resume_df):
     # Extract only the relevant columns for the scorecard
     scorecard = resume_df[["resume_file_name", "resume_score"]]
 
-    # Determine the path to the user's Downloads folder
+    # Determine the path to the user's Downloads folder 
     downloads_folder = os.path.join(os.path.expanduser("~"), "Downloads")
 
     # Get the current date and time in a formatted string
