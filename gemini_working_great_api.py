@@ -267,7 +267,8 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
 
             # Generate a unique file name using a timestamp
             timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
-            unique_filename = f"{timestamp}_{file.filename}"
+            file_name = file.filename
+            unique_filename = f"{timestamp}_{file_name}"
             file_path = os.path.join(extract_path, unique_filename)
 
             if file.content_type == "application/zip" or file_extension == "zip":
@@ -276,7 +277,8 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
                 extracted_files = []
                 with zipfile.ZipFile(zip_file, 'r') as z:
                     # Extract files
-                    for original_file_name in z.namelist():
+                    file_name_list = z.namelist()
+                    for original_file_name in file_name_list:
                         # Generate a unique file name for each file in the ZIP
                         timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
                         unique_file_name = f"{timestamp}_{original_file_name}"
@@ -287,7 +289,10 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
                         extracted_files.append(unique_file_name)
 
                 pdf_contents = {}
+                i = 0
                 for file_name in extracted_files:
+                    original_name = file_name_list[i]
+                    i += 1
                     file_path = os.path.join(extract_path, file_name)
                     if file_name.endswith(".pdf"):
                         file_path = os.path.join(extract_path, file_name)
@@ -296,21 +301,21 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
                             text = ""
                             for page in reader.pages:
                                 text += page.extract_text()
-                            response_data[file_name] = {"content": text, "file_path": file_path}
+                            response_data[original_name] = {"content": text, "file_path": file_path}
                     
                     # Process TXT files
                     elif file_name.endswith(".txt"):
                         with open(file_path, "r", encoding="utf-8") as txt_file:
                             text = txt_file.read()
-                            response_data[file_name] = {"content": text, "file_path": file_path}
+                            response_data[original_name] = {"content": text, "file_path": file_path}
 
                     elif file_name.endswith(".docx"):
                         try:
                             doc = Document(file_path)
                             text = "\n".join([paragraph.text for paragraph in doc.paragraphs])
-                            response_data[file_name] = {"content": text, "file_path": file_path}
+                            response_data[original_name] = {"content": text, "file_path": file_path}
                         except Exception as e:
-                            response_data[file_name] = {"content": e, "file_path": file_path}
+                            response_data[original_name] = {"content": e, "file_path": file_path}
 
                     # Process DOC files
                     elif file_name.endswith(".doc"):
@@ -320,9 +325,9 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
                             text = doc.Content.Text
                             doc.Close()
                             word.Quit()
-                            response_data[file_name] = {"content": text, "file_path": file_path}
+                            response_data[original_name] = {"content": text, "file_path": file_path}
                         except Exception as e:
-                            response_data[file_name] = {"content": f"Error reading DOC file: {str(e)}", "file_path": file_path}
+                            response_data[original_name] = {"content": f"Error reading DOC file: {str(e)}", "file_path": file_path}
 
             else:
                 # Save individual file to extracted_files directory
@@ -338,20 +343,20 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
                         text = ""
                         for page in reader.pages:
                             text += page.extract_text()
-                        response_data[unique_filename] = {"content": text}
+                        response_data[file_name] = {"content": text}
                 
                 elif file_extension == "txt":
                     with open(file_path, "r", encoding="utf-8") as txt_file:
                         text = txt_file.read()
-                        response_data[unique_filename] = {"content": text}
+                        response_data[file_name] = {"content": text}
                 
                 elif file_extension == "docx":
                     try:
                         doc = Document(file_path)
                         text = "\n".join([paragraph.text for paragraph in doc.paragraphs])
-                        response_data[unique_filename] = {"content": text}
+                        response_data[file_name] = {"content": text}
                     except Exception as e:
-                        response_data[unique_filename] = {"content": str(e)}
+                        response_data[file_name] = {"content": str(e)}
                 
                 elif file_extension == "doc":
                     try:
@@ -360,16 +365,16 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
                         text = doc.Content.Text
                         doc.Close()
                         word.Quit()
-                        response_data[unique_filename] = {"content": text}
+                        response_data[file_name] = {"content": text}
                     except Exception as e:
-                        response_data[unique_filename] = {"content": f"Error reading DOC file: {str(e)}"}
+                        response_data[file_name] = {"content": f"Error reading DOC file: {str(e)}"}
                 
                 else:
-                    response_data[unique_filename] = {
+                    response_data[file_name] = {
                         "error": "Unsupported file type. Supported formats: .pdf, .docx, .doc, .txt, .zip, .rar"
                     }
                 # Add file path to the response data
-                response_data[unique_filename]["file_path"] = file_path
+                response_data[file_name]["file_path"] = file_path
 
         except Exception as e:
             response_data[file.filename] = {
@@ -398,8 +403,9 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
 @app.get("/download/{file_name}")
 def download_file(file_name: str):
     """Endpoint to download a file by its name."""
-    file_path = os.path.join("extracted_files", file_name)  # Adjust the path as needed
-    if os.path.exists(file_path):
-        return FileResponse(file_path, media_type='application/octet-stream', filename=file_name)
+    # file_path = os.path.join("extracted_files", file_name)  # Adjust the path as needed
+    if os.path.exists(file_name):
+        print(file_name)
+        return FileResponse(file_name, media_type='application/octet-stream', filename = file_name.split('_', 2)[-1])
     else:
         return JSONResponse(content={"message": "File not found."}, status_code=404)

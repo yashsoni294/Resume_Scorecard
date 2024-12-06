@@ -1,454 +1,50 @@
-import openai
-from langchain.prompts import PromptTemplate
-import os
-from dotenv import load_dotenv
-import PyPDF2
-import pandas as pd
-import docx
-import win32com.client as win32
-import tkinter as tk
-from tkinter import filedialog
-from langchain_core.prompts import PromptTemplate
-from datetime import datetime
-import threading
-from queue import Queue
-
-# Load API Key
-load_dotenv()
-API_KEY = os.getenv("OPENAI_API_KEY")
-
-openai.api_key = API_KEY
-
-
-TEMPLATES = {
-    "job_description" : """
-        
-        The text below is a job description:
-        {job_description_text}
-
-        Your task is to analyze the job description and extract critical aspects to evaluate a candidate's suitability effectively. Organize the extracted information into structured categories as outlined below. Ensure conciseness and avoid including assumptions or unnecessary details. The structured output will form the foundation for precise scoring.
-
-        1. Candidate Profile
-            1.1 Job-Related Keywords:
-
-            Extract highly relevant keywords and phrases, focusing on essential skills, tools, technologies, and qualifications.
-            Highlight terms that frequently appear, emphasizing the primary focus areas for the role.
-            1.2 Relevant Past Roles and Responsibilities:
-
-            Identify specific roles (e.g., "Project Manager," "Data Analyst") and responsibilities directly relevant to the role described.
-            Highlight areas where past experience aligns with the position key objectives.
-            1.3 Actionable Responsibilities:
-
-            List clear, measurable, and action-oriented expectations (e.g., "Design and implement X system," "Lead Y project team") to define success in this role.
-        2. Experience Requirements
-            2.1 Years of Experience:
-
-            Specify the required and preferred experience levels, distinguishing between mandatory and desirable years in relevant fields.
-            2.2 Technical Skills:
-
-            Provide a categorized list of required and preferred technical skills, specifying domain-specific tools, programming languages, platforms, or methodologies.
-            Highlight core skills critical for the role versus those that are supplementary.
-            2.3 Soft Skills and Interpersonal Abilities:
-
-            List required soft skills (e.g., leadership, problem-solving) and interpersonal abilities (e.g., teamwork, collaboration).
-            Include any role-specific examples mentioned, such as "strong stakeholder communication skills."
-
-        3. Educational Qualifications and Certifications
-            3.1 Minimum Educational Qualifications:
-
-            State the explicit educational requirements for the role (e.g., "Bachelors degree in Computer Science").
-            Differentiate between mandatory and preferred qualifications.
-            3.2 Certifications and Specialized Training:
-
-            Highlight certifications, licenses, or training programs required or preferred (e.g., "PMP certification," "AWS Certified Solutions Architect").
-            Include both general and domain-specific certifications if applicable.
-
-        Output Format:
-        Organize the extracted information in bullet-point format under the categories listed above. Ensure the content is:
-
-        Directly aligned with the job description.
-        Actionable and structured to facilitate accurate scoring.
-        Free from redundant details or assumptions.
-        """ ,
-
-    "resume" : """
-        The text below is a resume:
-        {resume_text}
-
-        Your task is to extract critical information from the resume, focusing only on its content without making assumptions or adding external details. The extracted details should be structured, concise, and actionable to support effective scoring. Use the categories below for organization:
-
-        1. Candidate Profile
-            1.1 Keywords Identified:
-
-            Extract relevant keywords that reflect the candidate's skills, roles, expertise, and domain knowledge.
-            Highlight recurring themes or terms indicative of specialization or focus areas.
-            1.2 Summary of Past Roles:
-
-            Summarize the candidate primary roles, emphasizing key responsibilities and measurable achievements.
-            Include details about progression or diversity in roles where mentioned (e.g., growth from Analyst to Manager).
-            1.3 Measurable Achievements:
-
-            Identify specific, quantifiable accomplishments (e.g., "Increased revenue by X%," "Reduced costs by Y%").
-            Highlight the use of action-oriented language (e.g., "Led," "Implemented," "Designed").
-        2. Experience Details
-
-            2.1 Total Years of Experience:
-
-            Indicate the total years of professional experience and the industries or domains the candidate has worked in.
-            Include any explicit references to seniority (e.g., "5+ years in project management").
-            2.2 Technical Skills and Proficiencies:
-
-            Extract technical skills explicitly mentioned (e.g., tools, programming languages, platforms) and categorize them as core or supplementary.
-            Include details of certifications or work examples that validate these skills.
-            2.3 Soft Skills and Team Contributions:
-
-            Highlight references to soft skills (e.g., problem-solving, adaptability) and team-related contributions (e.g., collaboration, mentoring).
-            Focus on examples that demonstrate these abilities, such as leadership roles or cross-functional projects.
-        3. Educational Qualifications and Certifications
-
-            3.1 Educational Background:
-
-            Note the highest qualification achieved, field of study, and any notable academic honors or achievements.
-            Include additional qualifications that may complement the role.
-            3.2 Certifications and Professional Training:
-
-            List certifications, training programs, and licenses, specifying their relevance to the candidate's field or the role in question.
-            Highlight certifications that indicate advanced expertise or specialization (e.g., "AWS Certified Solutions Architect").
-
-        Output Format:
-        Present the extracted details in the following format:
-
-        Category: Subcategory/Point (e.g., Candidate Profile: Measurable Achievements).
-        Use bullet points or short, clear sentences for each item.
-        Ensure alignment with the resume content without adding interpretations or assumptions.
-
-        """ , 
-    "score" : """
-        Your task is to evaluate the alignment between the provided resume and job description by analyzing three critical sections: Candidate Profile, Experience, and Educational Qualifications and Certifications. Based on your evaluation, assign a final score between 0 and 100, reflecting the overall suitability of the candidate for the job.
-
-        Inputs:
-        Resume Text:
-        {resume_text}
-
-        Job Description Text:
-        {job_description}
-
-        Scoring Guidelines:
-        Evaluate the resume against the job description using the criteria outlined below. Assign marks in each category, calculate the total, and round the final score to the nearest whole number.
-
-        1. Candidate Profile (Max 16 Marks)
-            1.1 Job-Related Keywords (Max 6 Marks):
-                6 Points: Resume includes all highly relevant keywords, indicating strong alignment with job requirements.
-                3 Points: Resume includes many relevant keywords but misses some critical ones.
-                1 Points: Resume includes few relevant keywords or misses key terms.
-            1.2 Relevance of Past Roles to Job Description (Max 5 Marks):
-                5 Points: Past roles and responsibilities strongly align with the job description.
-                3 Points: Moderate alignment, with partial overlap in roles and responsibilities.
-                1 Points: Limited relevance or weak alignment.
-            1.3 Clarity of Responsibilities (Max 5 Marks):
-                5 Points: Responsibilities are clearly defined using action words (e.g., "Developed," "Managed") with measurable outcomes.
-                3 Points: Responsibilities are described but lack clear action words or measurable outcomes.
-                1 Points: Responsibilities are vague or generic.
-
-        2. Experience Section (Max 63 Marks)
-            2.1 Years of Experience (Max 15 Marks):
-                15 Points: Meets or exceeds the required years of experience.
-                10 Points: Slightly below the required years but with relevant experience.
-                5 Points: Limited relevance or inadequate years of experience.
-            2.2 Matching Technical Skills (Max 39 Marks):
-                39 Points: All technical skills mentioned in the job description are evident, supported by examples or certifications.
-                25 Points: Most technical skills are evident, but examples or certifications are missing.
-                15 Points: Some technical skills align, but several are missing.
-                5 Points: Minimal or no alignment with the required technical skills.
-            2.3 Communication and Teamwork (Max 9 Marks):
-                9 Points: Strong evidence of soft skills, supported by examples (e.g., "Led a team of 5," "Facilitated cross-department collaboration").
-                7 Points: Mentions soft skills but lacks specific examples.
-                3 Points: Minimal or generic mention of soft skills.
-
-        3. Educational Qualifications and Certifications (Max 21 Marks)
-            3.1 Minimum Educational Qualifications (Max 16 Marks):
-                16 Points: Meets or exceeds the educational qualifications specified in the job description.
-                10 Points: Meets basic qualifications but lacks advanced or preferred qualifications.
-                5 Points: Does not fully meet the educational qualifications.
-            3.2 Additional Certifications/Training Programs (Max 5 Marks):
-                5 Points: Certifications/training are directly relevant to the job description (e.g., industry-specific certifications).
-                3 Points: Certifications or training are partially relevant to the job description.
-                1 Point: No additional certifications or irrelevant certifications.
-
-        Additional Refinements:
-            Ensure that scoring accounts for both the breadth and depth of alignment between the resume and job description.
-            Emphasize evidence-backed qualifications and experience to avoid scoring inflated or unsupported claims.
-        Output:
-            Provide the final calculated score as a single whole number (0 – 100) with no additional explanation or text. If you are not able to score the resume then you can give 0 score to the resume.
-        """
-
+{
+  "Naukri_AmitSinghal[13y_0m].pdf": {
+    "content": "AMIT SINGHAL Flat No – DFF1, Jain Villa,                                                                                Contact No: +91-8130700332          Mukesh Colony, Ballabgarh, Faridabad                                                         E-mail: singhal.amit72@gmail.com   Career Objec4ve To aJain a prominent posiLon in the corporate world as a respected professional, uLlizing my skills and experLse to contribute to the success and growth of my organizaLon.  Summary •Over 13 Years of Experience Demonstrated experLse in soUware development and team leadership, with a strong focus on educaLonal technology soluLons. •Extensive experience in programming languages, especially Python, and web frameworks including Django and Flask. •Proven track record in designing and implemenLng tools that assist students in making informed academic decisions. •Skilled in creaLng and managing secure payment plaYorms, enhancing user experience and operaLonal eﬃciency. •Experienced in integraLng third-party APIs and payment gateways, improving applicaLon funcLonality and user engagement. •Adept at managing databases, conducLng data porLng, and ensuring data integrity within applicaLons. •Strong analyLcal and criLcal thinking abiliLes, with a commitment to delivering high-quality soluLons. •Proven capability in leading development teams and mentoring junior developers to foster professional growth. Technical Skills \nEduca4on Qualiﬁca4ons : MCA from M.D. University Campus Rohtak (2009) - 76% Professional Experience Technology Head B2C  Careers360                         June 2023 – Present SkillProﬁciency LevelHTMLAdvancedPythonAdvancedDjangoAdvancedFlaskAdvancedMySQLAdvancedAPI IntegraLonAdvancedPayment Gateway IntegraLonAdvancedMulL-threading ConceptsIntermediateData PorLngAdvancedObject-Oriented ProgrammingAdvanced•Oversee the technological direcLon of B2C products, ensuring alignment with business objecLves and customer needs. •Lead a team of developers and engineers to innovate and enhance product oﬀerings in the educaLon sector. •Collaborate with cross-funcLonal teams to idenLfy market trends and user feedback, driving conLnuous improvement. •Implement best pracLces in soUware development, including Agile methodologies, to increase producLvity and eﬃciency. Sr. Team Lead NoPaperForms                               August 2021 – June 2023 •Developed a Common Payment PlaYorm using Python, Django, and Flask to streamline payment processes. •Implemented secure payment methods, enhancing transacLon safety for users. •Designed the architecture to handle mulLple payment gateways, improving ﬂexibility. •Conducted tesLng and debugging to ensure funcLonality across plaYorms. •Collaborated with the UX team to create a user-friendly interface, increasing user engagement. Tech Lead Careers360                  May 2012 – August 2021 ResponsibiliLes: •Led a team of developers in the design, development, and maintenance of various educaLonal tools and web applicaLons. •Collaborated closely with product managers to deﬁne project requirements, speciﬁcaLons, and Lmelines. •Conducted regular code reviews and provided mentorship to junior developers, promoLng best coding pracLces and eﬃcient coding techniques. •Managed the complete soUware development lifecycle, including requirements gathering, design, implementaLon, tesLng, deployment, and post-deployment support. •Monitored applicaLon performance, troubleshooLng issues and ensuring opLmal user experience. •Coordinated with cross-funcLonal teams to integrate user feedback into product enhancements and updates. Sr. SoSware Developer Weboseo Pvt. Ltd.                                                                                                                             Sept 2010 – May 2012 •Developed a Mini ERP System that includes various modules such as Master, Purchase Gate, MRR, Quality, ProducLon, and Sales. •Designed the system architecture to support mulLple user roles and permissions. •Implemented real-Lme tracking of inventory and sales data for improved decision-making. •Collaborated with stakeholders to ensure the ERP system met all business requirements. •Conducted training sessions for end-users, facilitaLng smooth adopLon of the system. •Created a Job Work project to eﬃciently track Challan Receiving and Issuing processes. •Designed and developed mulLple dynamic websites tailored to client speciﬁcaLons. •Developed an Inventory Management Project for SATMOLA Client to streamline inventory tracking and reporLng. Key Projects: College Predictor: •Developed an interacLve tool to assist students in predicLng suitable colleges based on their academic performance. •Implemented machine learning algorithms to enhance predicLon accuracy. •Collaborated with the UI/UX team to design an intuiLve interface for ease of use. •Conducted user tesLng and incorporated feedback for conLnuous improvement. Result Predictor: •Created an applicaLon that forecasts student results, assisLng users in college selecLon. •ULlized staLsLcal analysis to provide data-driven predicLons based on past performance. •Designed the applicaLon architecture to handle large datasets eﬃciently. •Integrated user feedback mechanisms for ongoing enhancements and feature updates. Pathﬁnder: •Developed an applicaLon designed to guide students in choosing appropriate colleges based on their rank. •Implemented user-friendly features that simplify the college selecLon process. •Integrated real-Lme data analysis to provide students with updated informaLon. •Collaborated with academic counselors to ensure accurate data representaLon. Content Revision History Panel: •Developed using Django to track and manage changes in educaLonal content. •Implemented features for version control, enabling users to revert to previous content versions. •Collaborated with content teams to ensure accurate tracking of changes and updates. •Enhanced search funcLonality to improve user navigaLon through revision histories. Form Builder Panel: •Designed a dynamic form builder enabling users to create custom forms based on various parameters. •Ensured responsive design for accessibility across devices and plaYorms. •Integrated validaLon rules to enhance data integrity and user experience. •Provided documentaLon and training materials for users to maximize the tool’s eﬀecLveness. DECLARATION:-I hereby declare that the above-menLoned informaLon is correct up to my knowledge and I bear the responsibility for the correctness of the above-menLoned parLculars.  Date............ Place…………                                                                                                                                          (Amit Singhal)  ",
+    "file_path": "extracted_files\\20241206143239114364_Naukri_AmitSinghal[13y_0m].pdf",
+    "key_feature": "**1. Candidate Profile**\n\n*1.1 Keywords Identified:*  Software development, team leadership, educational technology, Python, Django, Flask, MySQL, API integration, payment gateway integration, data porting, database management, Agile methodologies,  web applications, educational tools,  payment platform,  user experience,  machine learning,  data analysis,  content management,  form builder.\n\n*1.2 Summary of Past Roles:*\n\n*   **Technology Head (B2C Careers360):** Oversees technological direction of B2C products, leads development teams, collaborates with cross-functional teams, implements best practices in software development.\n*   **Sr. Team Lead (NoPaperForms):** Developed a common payment platform using Python, Django, and Flask; implemented secure payment methods; designed architecture for multiple payment gateways.\n*   **Tech Lead (Careers360):** Led a team of developers in designing, developing, and maintaining educational tools and web applications; conducted code reviews and mentored junior developers; managed the software development lifecycle.\n*   **Sr. Software Developer (Weboseo Pvt. Ltd.):** Developed a mini ERP system; designed system architecture; implemented real-time tracking of inventory and sales data; developed dynamic websites and an inventory management project.  Progression is evident from Sr. Software Developer to Tech Lead to Sr. Team Lead to Technology Head.\n\n*1.3 Measurable Achievements:*\n\n* Developed a common payment platform streamlining payment processes (NoPaperForms).\n* Implemented secure payment methods enhancing transaction safety (NoPaperForms).\n* Designed architecture to handle multiple payment gateways improving flexibility (NoPaperForms).\n* Led a team of developers in the design, development, and maintenance of various educational tools and web applications (Careers360).\n* Developed an interactive tool to assist students in predicting suitable colleges (College Predictor).\n* Created an application that forecasts student results assisting users in college selection (Result Predictor).\n* Developed an application to guide students in choosing appropriate colleges based on their rank (Pathfinder).\n* Developed a Django application to track and manage changes in educational content (Content Revision History Panel).\n* Designed a dynamic form builder enabling users to create custom forms (Form Builder Panel).\n* Developed a Mini ERP System including modules for Master, Purchase Gate, MRR, Quality, Production, and Sales (Weboseo Pvt. Ltd.).\n\n\n**2. Experience Details**\n\n*2.1 Total Years of Experience:* Over 13 years in software development, primarily in the educational technology sector.\n\n*2.2 Technical Skills and Proficiencies:*\n\n* **Core:** Python (Advanced), Django (Advanced), Flask (Advanced), MySQL (Advanced), API Integration (Advanced), Payment Gateway Integration (Advanced), Data Porting (Advanced), Object-Oriented Programming (Advanced), HTML (Advanced), Multi-threading Concepts (Intermediate).\n* **Supplementary:**  Data Analysis, Machine Learning algorithm implementation.\n\n*2.3 Soft Skills and Team Contributions:*\n\n* Team leadership and mentoring junior developers.\n* Collaboration with cross-functional teams (product managers, UX teams, content teams).\n* Agile methodologies implementation.\n* Problem-solving (troubleshooting application issues, ensuring optimal user experience).\n* Communication and stakeholder management (training end-users, collaborating with clients).\n\n\n**3. Educational Qualifications and Certifications**\n\n*3.1 Educational Background:* MCA from M.D. University Campus Rohtak (2009) - 76%\n\n*3.2 Certifications and Professional Training:* None explicitly mentioned.\n",
+    "score": "78\n"
+  },
+  "Naukri_GovardhanKothakotaMangala[3y_3m].docx": {
+    "content": "GOVARDHAN KOTHAKOTA\nContact No: 7799296190\nMail Id: govardhankothakota@gmail.com\nREACT JS DEVELOPER\n\nProfessional Objective\nLooking for a challenging career in an organization that will provide me an opportunity to apply my skills and experience for the advancement of the organization and my continued growth.\nSummary of experience\nOver 3.3 years of experience as a Software Developer (UI) with a strong background in \ndevelopment, API integration, and module installation.\nSkilled in designing front-end interfaces using HTML5, CSS3, and JavaScript.\nExperienced in building user interfaces and web applications with React.JS, React Typescript, \nand React-Redux, focusing on real-time data updates and dynamic UI.\nFamiliar with responsive web design principles and creating React components using concepts \nlike one-way data flow, Virtual DOM, JSX, and Redux.\nBasic knowledge of writing unit tests in React.JS with React Testing Library.\nStrong communication, time management, and team collaboration skills, capable of meeting project deadlines in challenging environments.\nFront End Technologies: HTML5, CSS3, JavaScript ES6+, Responsive web Design, React Js\nReactJS Skills: React Fundamentals, React Hooks, State Management, Component Libraries (React-Bootstrap, Material-UI), Client-Side Routing (React Router), Redux Toolkit, React-Bootstrap, SASS, React TypeScript \nAPI Integration: REST APIs, Axios, Fetch\nJavaScript Ecosystem:  ES6+ Features, NPM/Yarn\nDevelopment Tools: Version Control (Git, GitHub), Unit Testing & Debugging, Code Review & Collaboration\nUnit Testing: React Testing Library\nBasic Skills: MongoDB, Node.js, Express.js,\nOther Skills: Communication and team collaboration\nProfessional Projects Summary\n\"I am currently working on projects at Techraq Info Solutions Private Limited (Hyderabad) as a Frontend Developer since February 2022.\"\nOVH HRM Portal (Nov 2023 - Present)\nProject Description\nDeveloped the \"OVH HRM Portal,\" a comprehensive web-based HRM solution designed to provide \nemployees with access to their profiles and be managed by the HR department and top-line management.\nThis portal streamlines HR processes and improves user experience with a robust and interactive web interface.\nRoles and Responsibilities:\nInvolved in creating the entire HRM portal from scratch using React JS, Core-React, and Redux \nToolkit, ensuring a dynamic and scalable solution.\nDeveloped user-friendly and interactive web pages in alignment with company standards,\n employing HTML5 and CSS3 for a professional and responsive design.\nDesigned and implemented React.js directives, factories, and services to support the development\n of single-page applications.\nImplemented client-side form validation using React JS to ensure accurate user input before\n backend processing.\nConducted unit tests for React components using React Testing Library to ensure reliability and performance.\nCollaborated with Agile (Scrum) development team on delivering regular updates to the business team and project managers to meet project deadlines.\n\nTechnologies used:\nOperating System\t: Windows10. Programming Languages\t: JavaScript\nTechnologies                              : React JS, React-Bootstrap, HTML5, CSS3, SASS, JavaScript, React-Router, APIs, Redux.    \n\nPakwann Food Paradise (Feb 2022 - Oct 2023)\nProject Description\nDeveloped \"Pakwann Food Paradise,\" an online food ordering system that makes ordering easy and efficient. Similar to an e-commerce platform, users can browse the menu, select items, and place orders online. It offers a user-friendly experience with simple payment options and smooth order management, helping restaurants improve their online ordering process.\nRoles and Responsibilities:\nCreated and implemented the entire online ordering system using ReactJS, ensuring a responsive and interactive user interface.\nDesigned web pages using HTML, CSS, and Bootstrap to provide a professional look and feel with responsive design.\nIntegrated SASS for efficient and scalable styling across web platforms.\nImplemented intuitive order flows and easy-to-use payment methods to improve the customer experience.\nWorked in a collaborative team of 6, ensuring smooth project delivery within the given timeline.\n\n\nTechnologies used:\nOperating System\t: Windows10. Programming Languages\t: JavaScript\nTechnologies\t: React JS, React-Bootstrap, HTML5, CSS3, SASS, JavaScript, React-Router, API’s, Redux.\n\n\"Worked on the 'Skill Profile for Seva' project as a Frontend Developer at Capgemini Technology Services India Limited (Bengaluru).\"\nSkill Profile for Seva\nProject Description\nDeveloped the \"Skill Profile for Seva\" web page for the Siddha Yoga Path, a platform designed for users to input and manage their skills and profiles related to seva (selfless service) within the foundation. This tool facilitates efficient matching of volunteer skills with project needs, enhancing the organization's ability to utilize volunteers effectively.\nRoles and Responsibilities:\nAssisted in gathering client requirements and preparing comprehensive technical documents, including estimations.\nInvolved in UI design for page templates.\nContributed to implementing business logic for the backend and integrating React functionality \nfor the frontend.\nUtilized React-Bootstrap for responsive design and Redux Toolkit for state management.\nCollaborated with the Agile (Scrum) development team to deliver regular updates to the business team and project managers, ensuring alignment with project goals and timely delivery.\n\nTechnologies used:\nOperating System\t: Windows10. Programming Languages\t: JavaScript\nTechnologies                               : React JS, React-Bootstrap, HTML5, CSS3, SASS, JavaScript, React-Router, API’s, Redux.\n\nPersonal Details\nI was born on 22th March 1998.\nMy present address is H-NO: 1-2254, Main Bazar, opposite Ravindranath clothes store, Pamidi(MO), Anantapur (DT), Andhra Pradesh, 515775.\nI can be reached at +91-7799296190 and govardhankothakota@gmail.com.\n\n\n\n\n\n\nI hereby declare that the above written particulars are true to the best of my knowledge.\nPlace: Hyderabad\n\t(KM.Govardhan)",
+    "file_path": "extracted_files\\20241206143239125599_Naukri_GovardhanKothakotaMangala[3y_3m].docx",
+    "key_feature": "**1. Candidate Profile**\n\n*1.1 Keywords Identified:* ReactJS, React Hooks, Redux, Redux Toolkit, React Router, React Testing Library, HTML5, CSS3, JavaScript ES6+, SASS, REST APIs, Axios,  Frontend Developer, UI Developer, Web Application Development, Responsive Web Design, API Integration,  Agile (Scrum),  Team Collaboration, Communication.\n\n*1.2 Summary of Past Roles:*  The candidate has consistently worked as a Frontend Developer for over 3.3 years, building and maintaining web applications using ReactJS and related technologies.  Roles involved full-stack development (including some backend integration) across multiple projects for different clients.\n\n*1.3 Measurable Achievements:*  Developed the entire OVH HRM Portal from scratch using ReactJS, Redux Toolkit, and other technologies. Created the Pakwann Food Paradise online food ordering system. Assisted in gathering client requirements and preparing technical documents for the Skill Profile for Seva project.  Conducted unit tests for React components using React Testing Library. Implemented client-side form validation using ReactJS.\n\n\n**2. Experience Details**\n\n*2.1 Total Years of Experience:* Over 3.3 years of experience as a Software Developer (UI) in the web application development industry.\n\n*2.2 Technical Skills and Proficiencies:*\n\n    * **Core:** ReactJS, React Hooks, Redux, Redux Toolkit, React Router, React Testing Library, HTML5, CSS3, JavaScript ES6+, SASS, REST APIs, Axios,  Git, GitHub.\n    * **Supplementary:**  React-Bootstrap, Material-UI, Node.js, Express.js, MongoDB.\n\n*2.3 Soft Skills and Team Contributions:* Strong communication, time management, and team collaboration skills.  Collaborated with Agile (Scrum) development teams on multiple projects, delivering regular updates to meet deadlines.\n\n\n**3. Educational Qualifications and Certifications**\n\n*3.1 Educational Background:* No formal educational background is explicitly stated in the provided resume.\n\n*3.2 Certifications and Professional Training:* No certifications or professional training are mentioned.\n",
+    "score": "15\n"
+  },
+  "Naukri_SANJAYKUMARGG[3y_0m].doc": {
+    "content": "SANJAY KUMAR G G\rReact Native Developer at Zoho \r3y | Chennai | 7.75 Lacs \r9524357221\rgopigskkumar@gmail.com\r“ 3 Years Experienced Frontend React JS & React Native developer. Knew & working with Tailwind CSS, Styled Components, Redux, Mobx & Many More. Improvising myself every single day and learning new things to update my knowledge. \rWORK SUMMARY\r3.3 Years Experienced Frontend React JS & React Native developer. Knew & working with Tailwind CSS, Styled Components, Redux, Mobx & Many More. Improvising myself every single day and learning new things to update my knowledge. Happy To Become a Frontend React Developer. \rIndustry : Software Product \rFunctional Area : IT & Information Security \rRole : IT & Information Security - Other \rWORK EXPERIENCE\rReact Native Developer Jun '23 - till date \rZoho\rAs a React Native developer, my main responsibility is to develop and maintain mobile applications using the React Native framework. I work closely with a team to understand project requirements and translate them into functional and visually appealing mobile apps. I write clean and efficient code, implement user interfaces, and integrate with backend APIs. In addition to coding, I also focus on testing and debugging to ensure the apps functionality and performance. I regularly collaborate with other team members, such as designers and product managers, to ensure we meet project objectives and deliver high-quality solutions. Part of my role involves staying updated with the latest trends and advancements in the React Native ecosystem. I explore new libraries, tools, and techniques to improve our development processes and enhance the user experience of our apps. When issues arise, I am responsible for troubleshooting and providing support to address any technical concerns. This requires strong problem-solving skills and the ability to communicate effectively with both technical and non-technical stakeholders. Overall, as a React Native developer, my goal is to create robust, efficient, and user-friendly mobile applications that meet the needs of our clients and end users. \rReact Native Developer Mar '22 - May '23 \rGoFrugal Technologies\rWorking as a React native developer at Ordereasy team and Zakya product with Zoho team. \rReact Js Frontend Developer Aug '21 - Mar '22 \rOsiz Technologies\rWorked as a React js developer and learned concepts like Hooks and Redux js. \rPROJECT DETAILS\rZakya - Mobile Store\rSep '22 to till date\rClient : Zoho \rRole : Programmer \rNature of Employment : Full time \rRole Description : React Native Cross platform developer - Android, iOS & Web \rTeam Size : 30 \rSkill Used : React Native, Mobx, React.js, iOS, Android \rProject Details:\rOnline ordering app from Zoho \rDisney site clone in React JS\rJul '22 to Aug '22\rClient : self \rRole : Programmer \rNature of Employment : Full time \rRole Description : \rTeam Size : 1 \rSkill Used : \rProject Details:\rDisney Plus site clone project for learning following technology - 1) Firebase - Authentication & Hosting 2) React - Started as a sample project 3) Styled Components 4) Redux Toolkit Site URL - react-disney-gsk.web.app \rEDUCATION DETAILS\rU.G.\rB.Sc (Computers) 2021 \rSourashtra College,Madurai\rOther Qualifications/Certifications/Programs:\rFundamentals of Digital Marketing\rIT SKILLS\rSkill Name \r\u0007Version \r\u0007Last Used \r\u0007Experience \r\u0007\r\u0007MS Office\r\u00072019\r\u00072022\r\u00072y\r\u0007\r\u0007HTML\r\u00075\r\u00072023\r\u00073y\r\u0007\r\u0007CSS\r\u00073\r\u00072023\r\u00073y\r\u0007\r\u0007Javascript\r\u0007\r\u00072023\r\u00072y 8m\r\u0007\r\u0007React Native\r\u00070.74.2\r\u00072024\r\u00072y 7m\r\u0007\r\u0007React.js\r\u000718.0.1\r\u00072024\r\u00073y\r\u0007\r\u0007Redux\r\u0007\r\u00072022\r\u00072y\r\u0007\r\u0007Mobx\r\u0007\r\u00072024\r\u00072y 3m\r\u0007\r\u0007DESIRED JOB DETAILS\rJob Type : Permanent \rEmployment Status : Full Time, Part Time \rUS Work Status : Not Mentioned \rPreferred Location : Chennai,Madurai,India,Bengaluru,Remote,Canada,Poland,Noida,Mumbai,Delhi / NCR \rPERSONAL DETAILS\rName : SANJAY KUMAR G G \rGender : Male \rMarital Status : Single/unmarried \rDate of Birth : 4 Apr 2001 \rAddress : \rMobile : 9524357221(M) \rEmail ID : gopigskkumar@gmail.com \r/\r",
+    "file_path": "extracted_files\\20241206143239128595_Naukri_SANJAYKUMARGG[3y_0m].doc",
+    "key_feature": "**1. Candidate Profile:**\n\n*1.1 Keywords Identified:* React Native, React JS, Frontend Developer, Mobile App Development,  Tailwind CSS, Styled Components, Redux, Mobx,  Cross-platform development, Android, iOS, Web, Firebase,  Software Product, IT & Information Security.\n\n*1.2 Summary of Past Roles:*  The candidate has progressively worked as a React JS Frontend Developer and then as a React Native Developer, gaining experience in developing and maintaining mobile applications using React Native, integrating with backend APIs, and collaborating with design and product teams.  Roles involved working on projects for clients like Zoho and GoFrugal Technologies.\n\n*1.3 Measurable Achievements:*  The resume does not contain specific, quantifiable achievements (e.g., increased efficiency, reduced bugs).  The resume focuses on responsibilities and technologies used.\n\n\n**2. Experience Details:**\n\n*2.1 Total Years of Experience:* 3 years of experience in software development, specifically frontend development using React JS and React Native.  Experience spans across software product companies.\n\n*2.2 Technical Skills and Proficiencies:*\n\n    * **Core Skills:** React Native, React.js, Redux, Mobx,  HTML, CSS, Javascript, Firebase.\n    * **Supplementary Skills:** Tailwind CSS, Styled Components.\n    * **Platforms:** Android, iOS, Web.\n\n*2.3 Soft Skills and Team Contributions:*  The candidate mentions collaboration with designers and product managers, troubleshooting, and providing support to address technical concerns.  The resume highlights problem-solving skills and effective communication with both technical and non-technical stakeholders.\n\n\n**3. Educational Qualifications and Certifications:**\n\n*3.1 Educational Background:* B.Sc (Computers), 2021, Sourashtra College, Madurai.\n\n*3.2 Certifications and Professional Training:* Fundamentals of Digital Marketing.\n",
+    "score": "15\n"
+  },
+  "New Text Document.txt": {
+    "content": "Chat history\n\n\nChatGPT\nChatGPT\n\nExplore GPTs\nToday\nResume File Extensions\n\nReply Email Template\nYesterday\nCode Documentation Request\nDebugging and Running C++\nPrevious 7 Days\nExtract text from DOC\nExtract text from PDF\nRun C++ in CMD\nPython to C++ Conversion\nResume Analysis with GenAI\nIdentifying Python File Dependencies\nCreate exe without console\nGet current time Python\nModule size in Python\nUpload Flask App GitHub\nFlask File Upload Integration\nHow to find IP\nSave file to Downloads\nPython to EXE conversion\nAPI Integration for Job Summarization\nUpgrade Pydantic with Pip\nFixing pydantic compatibility error\nPydantic package installation error\nIntroduction to Pydantic\nAccent Detection Models\nNumPy threading overview\nAI Assistant Setup\nDelete item from dict\nPython to EXE conversion\nUpgrade plan\nMore access to the best models\n\nChatGPT\n\nShare\n\nUser\nYou said:\nWhat are the extensions in which a resume can be \nChatGPT said:\nChatGPT\nResumes are commonly shared and submitted in the following file formats:\n\nPDF (.pdf)\n\nThe most widely used format for resumes. It preserves the layout, design, and formatting across different devices and systems.\nMicrosoft Word Document (.doc, .docx)\n\nThese are editable formats and often requested by recruiters for easy customization.\nPlain Text (.txt)\n\nSimple text format without any special formatting. Used in cases where applicant tracking systems (ATS) require plain text.\nRich Text Format (.rtf)\n\nRetains some formatting and can be opened by various text editors.\nHTML (.html)\n\nRarely used, but some people create online resumes as web pages.\nOpen Document Text (.odt)\n\nAn open-source alternative to Microsoft Word, used with tools like LibreOffice.\nImage Files (.jpg, .png)\n\nOccasionally used for graphic-heavy resumes or when designing resumes in non-traditional tools, though not ideal for ATS compatibility.\nOnline Resume Links\n\nWhile not a file extension, sharing resumes via platforms like LinkedIn, personal websites, or portfolio links is becoming popular.\nFor professional applications, PDF or DOCX are the safest choices, ensuring both readability and compatibility.\n\n\n\n\n\n\nYou said:\ndef read_pdf(file_path):\n    \"\"\"\n    Reads text from a PDF file.\n    Args:\n        file_path (str): Path to the PDF file.\n    Returns:\n        str: Extracted text from the PDF.\n    \"\"\"\n    text = \"\"\n    try:\n        with open(file_path, 'rb') as file:\n            reader = PyPDF2.PdfReader(file)\n            for page in reader.pages:\n                text += page.extract_text()\n    except Exception as e:\n        print(f\"Error reading PDF {file_path}: {e}\")\n    return text\n\nLike above write a function for reading .txt resume\nChatGPT said:\nChatGPT\nHere's a function for reading text from a .txt resume:\n\ndef read_txt(file_path):\n    \"\"\"\n    Reads text from a TXT file.\n    Args:\n        file_path (str): Path to the TXT file.\n    Returns:\n        str: Extracted text from the TXT file.\n    \"\"\"\n    text = \"\"\n    try:\n        with open(file_path, 'r', encoding='utf-8') as file:\n            text = file.read()\n    except Exception as e:\n        print(f\"Error reading TXT file {file_path}: {e}\")\n    return text\nExplanation:\nopen(file_path, 'r', encoding='utf-8'): Opens the file in read mode with UTF-8 encoding to handle various character sets.\nfile.read(): Reads the entire content of the file.\nError Handling: Catches and logs any exceptions (e.g., file not found, encoding issues).\nLet me know if you need further enhancements!\n\n\n\n\n\n\n\n\n\n\n\nChatGPT can make mistakes. Check important info.\n?\n",
+    "file_path": "extracted_files\\20241206143239131583_New Text Document.txt",
+    "key_feature": "This task cannot be completed.  The provided text is a chat history showing interactions with ChatGPT, not a resume.  The chat history demonstrates requests for information about resumes and code related to resume parsing, but it does not contain the actual content of a resume.  Therefore, there is no resume content to extract and organize according to the specified categories.\n",
+    "score": "0\n"
+  },
+  "Naukri_AmitSinghal[13y_0m](1).pdf": {
+    "content": "AMIT SINGHAL Flat No – DFF1, Jain Villa,                                                                                Contact No: +91-8130700332          Mukesh Colony, Ballabgarh, Faridabad                                                         E-mail: singhal.amit72@gmail.com   Career Objec4ve To aJain a prominent posiLon in the corporate world as a respected professional, uLlizing my skills and experLse to contribute to the success and growth of my organizaLon.  Summary •Over 13 Years of Experience Demonstrated experLse in soUware development and team leadership, with a strong focus on educaLonal technology soluLons. •Extensive experience in programming languages, especially Python, and web frameworks including Django and Flask. •Proven track record in designing and implemenLng tools that assist students in making informed academic decisions. •Skilled in creaLng and managing secure payment plaYorms, enhancing user experience and operaLonal eﬃciency. •Experienced in integraLng third-party APIs and payment gateways, improving applicaLon funcLonality and user engagement. •Adept at managing databases, conducLng data porLng, and ensuring data integrity within applicaLons. •Strong analyLcal and criLcal thinking abiliLes, with a commitment to delivering high-quality soluLons. •Proven capability in leading development teams and mentoring junior developers to foster professional growth. Technical Skills \nEduca4on Qualiﬁca4ons : MCA from M.D. University Campus Rohtak (2009) - 76% Professional Experience Technology Head B2C  Careers360                         June 2023 – Present SkillProﬁciency LevelHTMLAdvancedPythonAdvancedDjangoAdvancedFlaskAdvancedMySQLAdvancedAPI IntegraLonAdvancedPayment Gateway IntegraLonAdvancedMulL-threading ConceptsIntermediateData PorLngAdvancedObject-Oriented ProgrammingAdvanced•Oversee the technological direcLon of B2C products, ensuring alignment with business objecLves and customer needs. •Lead a team of developers and engineers to innovate and enhance product oﬀerings in the educaLon sector. •Collaborate with cross-funcLonal teams to idenLfy market trends and user feedback, driving conLnuous improvement. •Implement best pracLces in soUware development, including Agile methodologies, to increase producLvity and eﬃciency. Sr. Team Lead NoPaperForms                               August 2021 – June 2023 •Developed a Common Payment PlaYorm using Python, Django, and Flask to streamline payment processes. •Implemented secure payment methods, enhancing transacLon safety for users. •Designed the architecture to handle mulLple payment gateways, improving ﬂexibility. •Conducted tesLng and debugging to ensure funcLonality across plaYorms. •Collaborated with the UX team to create a user-friendly interface, increasing user engagement. Tech Lead Careers360                  May 2012 – August 2021 ResponsibiliLes: •Led a team of developers in the design, development, and maintenance of various educaLonal tools and web applicaLons. •Collaborated closely with product managers to deﬁne project requirements, speciﬁcaLons, and Lmelines. •Conducted regular code reviews and provided mentorship to junior developers, promoLng best coding pracLces and eﬃcient coding techniques. •Managed the complete soUware development lifecycle, including requirements gathering, design, implementaLon, tesLng, deployment, and post-deployment support. •Monitored applicaLon performance, troubleshooLng issues and ensuring opLmal user experience. •Coordinated with cross-funcLonal teams to integrate user feedback into product enhancements and updates. Sr. SoSware Developer Weboseo Pvt. Ltd.                                                                                                                             Sept 2010 – May 2012 •Developed a Mini ERP System that includes various modules such as Master, Purchase Gate, MRR, Quality, ProducLon, and Sales. •Designed the system architecture to support mulLple user roles and permissions. •Implemented real-Lme tracking of inventory and sales data for improved decision-making. •Collaborated with stakeholders to ensure the ERP system met all business requirements. •Conducted training sessions for end-users, facilitaLng smooth adopLon of the system. •Created a Job Work project to eﬃciently track Challan Receiving and Issuing processes. •Designed and developed mulLple dynamic websites tailored to client speciﬁcaLons. •Developed an Inventory Management Project for SATMOLA Client to streamline inventory tracking and reporLng. Key Projects: College Predictor: •Developed an interacLve tool to assist students in predicLng suitable colleges based on their academic performance. •Implemented machine learning algorithms to enhance predicLon accuracy. •Collaborated with the UI/UX team to design an intuiLve interface for ease of use. •Conducted user tesLng and incorporated feedback for conLnuous improvement. Result Predictor: •Created an applicaLon that forecasts student results, assisLng users in college selecLon. •ULlized staLsLcal analysis to provide data-driven predicLons based on past performance. •Designed the applicaLon architecture to handle large datasets eﬃciently. •Integrated user feedback mechanisms for ongoing enhancements and feature updates. Pathﬁnder: •Developed an applicaLon designed to guide students in choosing appropriate colleges based on their rank. •Implemented user-friendly features that simplify the college selecLon process. •Integrated real-Lme data analysis to provide students with updated informaLon. •Collaborated with academic counselors to ensure accurate data representaLon. Content Revision History Panel: •Developed using Django to track and manage changes in educaLonal content. •Implemented features for version control, enabling users to revert to previous content versions. •Collaborated with content teams to ensure accurate tracking of changes and updates. •Enhanced search funcLonality to improve user navigaLon through revision histories. Form Builder Panel: •Designed a dynamic form builder enabling users to create custom forms based on various parameters. •Ensured responsive design for accessibility across devices and plaYorms. •Integrated validaLon rules to enhance data integrity and user experience. •Provided documentaLon and training materials for users to maximize the tool’s eﬀecLveness. DECLARATION:-I hereby declare that the above-menLoned informaLon is correct up to my knowledge and I bear the responsibility for the correctness of the above-menLoned parLculars.  Date............ Place…………                                                                                                                                          (Amit Singhal)  ",
+    "file_path": "extracted_files\\20241206143244001443_Naukri_AmitSinghal[13y_0m](1).pdf",
+    "key_feature": "**1. Candidate Profile**\n\n*1.1 Keywords Identified:*  Software Development, Team Leadership, Educational Technology, Python, Django, Flask, MySQL, API Integration, Payment Gateway Integration, Data Porting, Agile Methodologies, Web Applications, Database Management,  Educational Tools,  Payment Platforms,  User Experience,  Machine Learning,  Data Analysis,  Content Management.\n\n*1.2 Summary of Past Roles:*\n\n*   **Technology Head (Careers360):** Oversees technological direction of B2C products, leads development teams, collaborates with cross-functional teams, implements best practices in software development.\n*   **Sr. Team Lead (NoPaperForms):** Developed a common payment platform using Python, Django, and Flask; implemented secure payment methods; designed architecture for multiple payment gateways.\n*   **Tech Lead (Careers360):** Led a team of developers in designing, developing, and maintaining educational tools and web applications; managed the software development lifecycle; mentored junior developers.\n*   **Sr. Software Developer (Weboseo Pvt. Ltd.):** Developed a mini ERP system; designed dynamic websites; developed an inventory management project.\n\n*1.3 Measurable Achievements:*\n\n* Developed a common payment platform streamlining payment processes (NoPaperForms).\n* Implemented secure payment methods enhancing transaction safety (NoPaperForms).\n* Designed architecture to handle multiple payment gateways improving flexibility (NoPaperForms).\n* Led a team of developers in the design, development, and maintenance of various educational tools and web applications (Careers360).\n* Developed an interactive tool to assist students in predicting suitable colleges (College Predictor).\n* Implemented machine learning algorithms to enhance prediction accuracy (College Predictor).\n* Created an application that forecasts student results assisting users in college selection (Result Predictor).\n* Developed an application to guide students in choosing appropriate colleges based on their rank (Pathfinder).\n* Developed a Django application to track and manage changes in educational content (Content Revision History Panel).\n* Designed a dynamic form builder enabling users to create custom forms (Form Builder Panel).\n\n\n**2. Experience Details**\n\n*2.1 Total Years of Experience:* Over 13 years in software development, primarily in the educational technology sector.\n\n*2.2 Technical Skills and Proficiencies:*\n\n* **Core:** Python (Advanced), Django (Advanced), Flask (Advanced), MySQL (Advanced), API Integration (Advanced), Payment Gateway Integration (Advanced), Data Porting (Advanced), Object-Oriented Programming (Advanced), Multi-threading Concepts (Intermediate), HTML (Advanced).\n* **Supplementary:**  Agile Methodologies\n\n*2.3 Soft Skills and Team Contributions:* Team leadership, mentoring junior developers, collaboration with cross-functional teams, problem-solving,  user feedback integration,  requirements gathering,  project management,  code reviews.\n\n\n**3. Educational Qualifications and Certifications**\n\n*3.1 Educational Background:* MCA from M.D. University Campus Rohtak (2009) - 76%\n\n*3.2 Certifications and Professional Training:* None explicitly mentioned.\n",
+    "score": "78\n"
+  },
+  "Naukri_GovardhanKothakotaMangala[3y_3m](2).docx": {
+    "content": "GOVARDHAN KOTHAKOTA\nContact No: 7799296190\nMail Id: govardhankothakota@gmail.com\nREACT JS DEVELOPER\n\nProfessional Objective\nLooking for a challenging career in an organization that will provide me an opportunity to apply my skills and experience for the advancement of the organization and my continued growth.\nSummary of experience\nOver 3.3 years of experience as a Software Developer (UI) with a strong background in \ndevelopment, API integration, and module installation.\nSkilled in designing front-end interfaces using HTML5, CSS3, and JavaScript.\nExperienced in building user interfaces and web applications with React.JS, React Typescript, \nand React-Redux, focusing on real-time data updates and dynamic UI.\nFamiliar with responsive web design principles and creating React components using concepts \nlike one-way data flow, Virtual DOM, JSX, and Redux.\nBasic knowledge of writing unit tests in React.JS with React Testing Library.\nStrong communication, time management, and team collaboration skills, capable of meeting project deadlines in challenging environments.\nFront End Technologies: HTML5, CSS3, JavaScript ES6+, Responsive web Design, React Js\nReactJS Skills: React Fundamentals, React Hooks, State Management, Component Libraries (React-Bootstrap, Material-UI), Client-Side Routing (React Router), Redux Toolkit, React-Bootstrap, SASS, React TypeScript \nAPI Integration: REST APIs, Axios, Fetch\nJavaScript Ecosystem:  ES6+ Features, NPM/Yarn\nDevelopment Tools: Version Control (Git, GitHub), Unit Testing & Debugging, Code Review & Collaboration\nUnit Testing: React Testing Library\nBasic Skills: MongoDB, Node.js, Express.js,\nOther Skills: Communication and team collaboration\nProfessional Projects Summary\n\"I am currently working on projects at Techraq Info Solutions Private Limited (Hyderabad) as a Frontend Developer since February 2022.\"\nOVH HRM Portal (Nov 2023 - Present)\nProject Description\nDeveloped the \"OVH HRM Portal,\" a comprehensive web-based HRM solution designed to provide \nemployees with access to their profiles and be managed by the HR department and top-line management.\nThis portal streamlines HR processes and improves user experience with a robust and interactive web interface.\nRoles and Responsibilities:\nInvolved in creating the entire HRM portal from scratch using React JS, Core-React, and Redux \nToolkit, ensuring a dynamic and scalable solution.\nDeveloped user-friendly and interactive web pages in alignment with company standards,\n employing HTML5 and CSS3 for a professional and responsive design.\nDesigned and implemented React.js directives, factories, and services to support the development\n of single-page applications.\nImplemented client-side form validation using React JS to ensure accurate user input before\n backend processing.\nConducted unit tests for React components using React Testing Library to ensure reliability and performance.\nCollaborated with Agile (Scrum) development team on delivering regular updates to the business team and project managers to meet project deadlines.\n\nTechnologies used:\nOperating System\t: Windows10. Programming Languages\t: JavaScript\nTechnologies                              : React JS, React-Bootstrap, HTML5, CSS3, SASS, JavaScript, React-Router, APIs, Redux.    \n\nPakwann Food Paradise (Feb 2022 - Oct 2023)\nProject Description\nDeveloped \"Pakwann Food Paradise,\" an online food ordering system that makes ordering easy and efficient. Similar to an e-commerce platform, users can browse the menu, select items, and place orders online. It offers a user-friendly experience with simple payment options and smooth order management, helping restaurants improve their online ordering process.\nRoles and Responsibilities:\nCreated and implemented the entire online ordering system using ReactJS, ensuring a responsive and interactive user interface.\nDesigned web pages using HTML, CSS, and Bootstrap to provide a professional look and feel with responsive design.\nIntegrated SASS for efficient and scalable styling across web platforms.\nImplemented intuitive order flows and easy-to-use payment methods to improve the customer experience.\nWorked in a collaborative team of 6, ensuring smooth project delivery within the given timeline.\n\n\nTechnologies used:\nOperating System\t: Windows10. Programming Languages\t: JavaScript\nTechnologies\t: React JS, React-Bootstrap, HTML5, CSS3, SASS, JavaScript, React-Router, API’s, Redux.\n\n\"Worked on the 'Skill Profile for Seva' project as a Frontend Developer at Capgemini Technology Services India Limited (Bengaluru).\"\nSkill Profile for Seva\nProject Description\nDeveloped the \"Skill Profile for Seva\" web page for the Siddha Yoga Path, a platform designed for users to input and manage their skills and profiles related to seva (selfless service) within the foundation. This tool facilitates efficient matching of volunteer skills with project needs, enhancing the organization's ability to utilize volunteers effectively.\nRoles and Responsibilities:\nAssisted in gathering client requirements and preparing comprehensive technical documents, including estimations.\nInvolved in UI design for page templates.\nContributed to implementing business logic for the backend and integrating React functionality \nfor the frontend.\nUtilized React-Bootstrap for responsive design and Redux Toolkit for state management.\nCollaborated with the Agile (Scrum) development team to deliver regular updates to the business team and project managers, ensuring alignment with project goals and timely delivery.\n\nTechnologies used:\nOperating System\t: Windows10. Programming Languages\t: JavaScript\nTechnologies                               : React JS, React-Bootstrap, HTML5, CSS3, SASS, JavaScript, React-Router, API’s, Redux.\n\nPersonal Details\nI was born on 22th March 1998.\nMy present address is H-NO: 1-2254, Main Bazar, opposite Ravindranath clothes store, Pamidi(MO), Anantapur (DT), Andhra Pradesh, 515775.\nI can be reached at +91-7799296190 and govardhankothakota@gmail.com.\n\n\n\n\n\n\nI hereby declare that the above written particulars are true to the best of my knowledge.\nPlace: Hyderabad\n\t(KM.Govardhan)",
+    "file_path": "extracted_files\\20241206143245068536_Naukri_GovardhanKothakotaMangala[3y_3m](2).docx",
+    "key_feature": "**1. Candidate Profile**\n\n*1.1 Keywords Identified:* ReactJS, React Hooks, Redux, Redux Toolkit, React Router, React Testing Library, HTML5, CSS3, JavaScript ES6+, SASS, REST APIs, Axios,  Frontend Developer, UI Developer, Web Application Development, Responsive Web Design, API Integration,  Agile (Scrum),  Team Collaboration, Communication.\n\n*1.2 Summary of Past Roles:*  The candidate has consistently worked as a Frontend Developer for over 3.3 years, building and maintaining web applications using ReactJS and related technologies.  Roles involved full-stack development (including some backend integration) across multiple projects for different clients.\n\n*1.3 Measurable Achievements:*  Developed the entire OVH HRM Portal from scratch using ReactJS, Redux Toolkit, and other technologies. Created and implemented the Pakwann Food Paradise online food ordering system. Assisted in gathering client requirements and preparing technical documents for the Skill Profile for Seva project.  Conducted unit tests for React components using React Testing Library. Implemented client-side form validation using ReactJS.\n\n\n**2. Experience Details**\n\n*2.1 Total Years of Experience:* Over 3.3 years of experience as a Software Developer (UI) in the web application development industry.\n\n*2.2 Technical Skills and Proficiencies:*\n\n    * **Core Skills:** ReactJS, React Hooks, Redux, Redux Toolkit, React Router, React Testing Library, HTML5, CSS3, JavaScript ES6+, SASS, REST APIs, Axios,  Git, GitHub.\n    * **Supplementary Skills:**  React-Bootstrap, Material-UI, Node.js, Express.js, MongoDB.\n\n*2.3 Soft Skills and Team Contributions:* Strong communication, time management, and team collaboration skills.  Collaborated with Agile (Scrum) development teams, delivering regular updates to meet project deadlines.\n\n\n**3. Educational Qualifications and Certifications**\n\n*3.1 Educational Background:* No formal educational background is explicitly stated in the provided resume.\n\n*3.2 Certifications and Professional Training:* No certifications or professional training are mentioned.\n",
+    "score": "15\n"
+  },
+  "Naukri_SANJAYKUMARGG[3y_0m](1).doc": {
+    "content": "SANJAY KUMAR G G\rReact Native Developer at Zoho \r3y | Chennai | 7.75 Lacs \r9524357221\rgopigskkumar@gmail.com\r“ 3 Years Experienced Frontend React JS & React Native developer. Knew & working with Tailwind CSS, Styled Components, Redux, Mobx & Many More. Improvising myself every single day and learning new things to update my knowledge. \rWORK SUMMARY\r3.3 Years Experienced Frontend React JS & React Native developer. Knew & working with Tailwind CSS, Styled Components, Redux, Mobx & Many More. Improvising myself every single day and learning new things to update my knowledge. Happy To Become a Frontend React Developer. \rIndustry : Software Product \rFunctional Area : IT & Information Security \rRole : IT & Information Security - Other \rWORK EXPERIENCE\rReact Native Developer Jun '23 - till date \rZoho\rAs a React Native developer, my main responsibility is to develop and maintain mobile applications using the React Native framework. I work closely with a team to understand project requirements and translate them into functional and visually appealing mobile apps. I write clean and efficient code, implement user interfaces, and integrate with backend APIs. In addition to coding, I also focus on testing and debugging to ensure the apps functionality and performance. I regularly collaborate with other team members, such as designers and product managers, to ensure we meet project objectives and deliver high-quality solutions. Part of my role involves staying updated with the latest trends and advancements in the React Native ecosystem. I explore new libraries, tools, and techniques to improve our development processes and enhance the user experience of our apps. When issues arise, I am responsible for troubleshooting and providing support to address any technical concerns. This requires strong problem-solving skills and the ability to communicate effectively with both technical and non-technical stakeholders. Overall, as a React Native developer, my goal is to create robust, efficient, and user-friendly mobile applications that meet the needs of our clients and end users. \rReact Native Developer Mar '22 - May '23 \rGoFrugal Technologies\rWorking as a React native developer at Ordereasy team and Zakya product with Zoho team. \rReact Js Frontend Developer Aug '21 - Mar '22 \rOsiz Technologies\rWorked as a React js developer and learned concepts like Hooks and Redux js. \rPROJECT DETAILS\rZakya - Mobile Store\rSep '22 to till date\rClient : Zoho \rRole : Programmer \rNature of Employment : Full time \rRole Description : React Native Cross platform developer - Android, iOS & Web \rTeam Size : 30 \rSkill Used : React Native, Mobx, React.js, iOS, Android \rProject Details:\rOnline ordering app from Zoho \rDisney site clone in React JS\rJul '22 to Aug '22\rClient : self \rRole : Programmer \rNature of Employment : Full time \rRole Description : \rTeam Size : 1 \rSkill Used : \rProject Details:\rDisney Plus site clone project for learning following technology - 1) Firebase - Authentication & Hosting 2) React - Started as a sample project 3) Styled Components 4) Redux Toolkit Site URL - react-disney-gsk.web.app \rEDUCATION DETAILS\rU.G.\rB.Sc (Computers) 2021 \rSourashtra College,Madurai\rOther Qualifications/Certifications/Programs:\rFundamentals of Digital Marketing\rIT SKILLS\rSkill Name \r\u0007Version \r\u0007Last Used \r\u0007Experience \r\u0007\r\u0007MS Office\r\u00072019\r\u00072022\r\u00072y\r\u0007\r\u0007HTML\r\u00075\r\u00072023\r\u00073y\r\u0007\r\u0007CSS\r\u00073\r\u00072023\r\u00073y\r\u0007\r\u0007Javascript\r\u0007\r\u00072023\r\u00072y 8m\r\u0007\r\u0007React Native\r\u00070.74.2\r\u00072024\r\u00072y 7m\r\u0007\r\u0007React.js\r\u000718.0.1\r\u00072024\r\u00073y\r\u0007\r\u0007Redux\r\u0007\r\u00072022\r\u00072y\r\u0007\r\u0007Mobx\r\u0007\r\u00072024\r\u00072y 3m\r\u0007\r\u0007DESIRED JOB DETAILS\rJob Type : Permanent \rEmployment Status : Full Time, Part Time \rUS Work Status : Not Mentioned \rPreferred Location : Chennai,Madurai,India,Bengaluru,Remote,Canada,Poland,Noida,Mumbai,Delhi / NCR \rPERSONAL DETAILS\rName : SANJAY KUMAR G G \rGender : Male \rMarital Status : Single/unmarried \rDate of Birth : 4 Apr 2001 \rAddress : \rMobile : 9524357221(M) \rEmail ID : gopigskkumar@gmail.com \r/\r",
+    "file_path": "extracted_files\\20241206143246068027_Naukri_SANJAYKUMARGG[3y_0m](1).doc",
+    "key_feature": "**1. Candidate Profile:**\n\n*1.1 Keywords Identified:* React Native, React JS, Frontend Developer, Mobile App Development,  Tailwind CSS, Styled Components, Redux, Mobx,  Cross-platform development, Android, iOS, Web, Firebase,  Software Product, IT & Information Security.\n\n*1.2 Summary of Past Roles:*  The candidate has progressively worked as a React JS Frontend Developer and then as a React Native Developer, gaining experience in developing and maintaining mobile applications using React Native, integrating with backend APIs, and collaborating with design and product teams.  Roles involved working on projects for clients like Zoho and GoFrugal Technologies.\n\n*1.3 Measurable Achievements:*  The resume does not contain specific, quantifiable achievements (e.g., increased efficiency, reduced bugs).  The resume focuses on responsibilities and technologies used.\n\n\n**2. Experience Details:**\n\n*2.1 Total Years of Experience:* 3 years of experience in software development, specifically frontend development using React JS and React Native.  Experience spans across software product companies.\n\n*2.2 Technical Skills and Proficiencies:*\n\n    * **Core Skills:** React Native, React.js, Redux, Mobx,  HTML, CSS, Javascript, Firebase.\n    * **Supplementary Skills:** Tailwind CSS, Styled Components.\n    * **Platforms:** Android, iOS, Web.\n\n*2.3 Soft Skills and Team Contributions:*  The candidate mentions collaboration with designers and product managers, troubleshooting, and providing support to address technical concerns.  The resume highlights problem-solving skills and effective communication with both technical and non-technical stakeholders.\n\n\n**3. Educational Qualifications and Certifications:**\n\n*3.1 Educational Background:* B.Sc (Computers), 2021, Sourashtra College, Madurai.\n\n*3.2 Certifications and Professional Training:* Fundamentals of Digital Marketing.\n",
+    "score": "15\n"
+  },
+  "New Text Document(1).txt": {
+    "content": "Chat history\n\n\nChatGPT\nChatGPT\n\nExplore GPTs\nToday\nResume File Extensions\n\nReply Email Template\nYesterday\nCode Documentation Request\nDebugging and Running C++\nPrevious 7 Days\nExtract text from DOC\nExtract text from PDF\nRun C++ in CMD\nPython to C++ Conversion\nResume Analysis with GenAI\nIdentifying Python File Dependencies\nCreate exe without console\nGet current time Python\nModule size in Python\nUpload Flask App GitHub\nFlask File Upload Integration\nHow to find IP\nSave file to Downloads\nPython to EXE conversion\nAPI Integration for Job Summarization\nUpgrade Pydantic with Pip\nFixing pydantic compatibility error\nPydantic package installation error\nIntroduction to Pydantic\nAccent Detection Models\nNumPy threading overview\nAI Assistant Setup\nDelete item from dict\nPython to EXE conversion\nUpgrade plan\nMore access to the best models\n\nChatGPT\n\nShare\n\nUser\nYou said:\nWhat are the extensions in which a resume can be \nChatGPT said:\nChatGPT\nResumes are commonly shared and submitted in the following file formats:\n\nPDF (.pdf)\n\nThe most widely used format for resumes. It preserves the layout, design, and formatting across different devices and systems.\nMicrosoft Word Document (.doc, .docx)\n\nThese are editable formats and often requested by recruiters for easy customization.\nPlain Text (.txt)\n\nSimple text format without any special formatting. Used in cases where applicant tracking systems (ATS) require plain text.\nRich Text Format (.rtf)\n\nRetains some formatting and can be opened by various text editors.\nHTML (.html)\n\nRarely used, but some people create online resumes as web pages.\nOpen Document Text (.odt)\n\nAn open-source alternative to Microsoft Word, used with tools like LibreOffice.\nImage Files (.jpg, .png)\n\nOccasionally used for graphic-heavy resumes or when designing resumes in non-traditional tools, though not ideal for ATS compatibility.\nOnline Resume Links\n\nWhile not a file extension, sharing resumes via platforms like LinkedIn, personal websites, or portfolio links is becoming popular.\nFor professional applications, PDF or DOCX are the safest choices, ensuring both readability and compatibility.\n\n\n\n\n\n\nYou said:\ndef read_pdf(file_path):\n    \"\"\"\n    Reads text from a PDF file.\n    Args:\n        file_path (str): Path to the PDF file.\n    Returns:\n        str: Extracted text from the PDF.\n    \"\"\"\n    text = \"\"\n    try:\n        with open(file_path, 'rb') as file:\n            reader = PyPDF2.PdfReader(file)\n            for page in reader.pages:\n                text += page.extract_text()\n    except Exception as e:\n        print(f\"Error reading PDF {file_path}: {e}\")\n    return text\n\nLike above write a function for reading .txt resume\nChatGPT said:\nChatGPT\nHere's a function for reading text from a .txt resume:\n\ndef read_txt(file_path):\n    \"\"\"\n    Reads text from a TXT file.\n    Args:\n        file_path (str): Path to the TXT file.\n    Returns:\n        str: Extracted text from the TXT file.\n    \"\"\"\n    text = \"\"\n    try:\n        with open(file_path, 'r', encoding='utf-8') as file:\n            text = file.read()\n    except Exception as e:\n        print(f\"Error reading TXT file {file_path}: {e}\")\n    return text\nExplanation:\nopen(file_path, 'r', encoding='utf-8'): Opens the file in read mode with UTF-8 encoding to handle various character sets.\nfile.read(): Reads the entire content of the file.\nError Handling: Catches and logs any exceptions (e.g., file not found, encoding issues).\nLet me know if you need further enhancements!\n\n\n\n\n\n\n\n\n\n\n\nChatGPT can make mistakes. Check important info.\n?\n",
+    "file_path": "extracted_files\\20241206143249897967_New Text Document(1).txt",
+    "key_feature": "This task cannot be completed.  The provided text is a chat history showing interactions with ChatGPT, not a resume.  The chat history demonstrates requests for information about resumes and code related to resume parsing, but it does not contain the actual content of a resume.  Therefore, there is no resume content to extract and organize into the requested categories.\n",
+    "score": "0\n"
+  }
 }
-
-
-# Initialize DataFrame
-resume_df = pd.DataFrame(columns=['resume_file_name', 'resume_file_text', 'resume_key_aspect', 'resume_score'])
-
-
-def get_conversation_openai(template, model="gpt-4o-mini", temperature=0.1, max_tokens=None):
-
-    def call_openai_model(inputs):
-        # Generate the prompt by formatting the template with the provided inputs
-        prompt = PromptTemplate.from_template(template).format(**inputs)
-        # Call the OpenAI Chat API to generate a response
-        response = openai.ChatCompletion.create(
-            model=model,
-            messages=[{"role": "system", "content": prompt}],
-            temperature=temperature,
-            max_tokens=max_tokens
-        )
-        # Extract and return the content of the response
-        return response["choices"][0]["message"]["content"]
-    
-    # Return the nested function for reuse
-    return call_openai_model
-
-def select_folder():
-    # Create a hidden root window for the dialog
-    root = tk.Tk()
-    root.withdraw() # Hide the root window
-
-    # Open the folder selection dialog and get the selected folder path
-    folder_path = filedialog.askdirectory(title="Select Folder")
-
-    # Replace forward slashes with backslashes for Windows compatibility
-    return folder_path.replace('/', '\\')
-
-def read_pdf(file_path):
-
-    # Initialize an empty string to store the extracted text
-    text = ""
-    try:
-        # Open the PDF file in binary read mode
-        with open(file_path, 'rb') as file:
-            # Initialize the PDF reader
-            reader = PyPDF2.PdfReader(file)
-            # Iterate through all pages and extract text
-            for page in reader.pages:
-                text += page.extract_text()
-    # Handle exceptions and print an error message if reading fails
-    except Exception as e:
-        print(f"Error reading PDF {file_path}: {e}")
-    # Return the extracted text (or an empty string if an error occurred)
-    return text
-
-def read_txt(file_path):
-
-    # Initialize an empty string to store the text
-    text = ""
-    try:
-        # Open the file in read mode with UTF-8 encoding
-        with open(file_path, 'r', encoding='utf-8') as file:
-            # Read the entire file content
-            text = file.read()
-    # Handle exceptions and print an error message if reading fails
-    except Exception as e:
-        print(f"Error reading TXT file {file_path}: {e}")
-    # Return the file content (or an empty string if an error occurred)
-    return text
-
-def read_docx(file_path):
-
-    try:
-        # Open the DOCX file using python-docx
-        doc = docx.Document(file_path)
-        # Extract text from all paragraphs and join them with newlines
-        return "\n".join(paragraph.text for paragraph in doc.paragraphs)
-    except Exception as e:
-        # Handle exceptions and print an error message if reading fails and returns a empty string.
-        print(f"Error reading DOCX {file_path}: {e}")
-        return ""
-
-def read_doc(file_path):
-
-    try:
-        # Use pywin32 to create a Word application instance
-        word = win32.Dispatch("Word.Application")
-        word.Visible = False # Keep the Word application hidden
-
-        # Open the DOC file
-        doc = word.Documents.Open(file_path)
-
-        # Extract the text content of the document
-        text = doc.Content.Text
-
-        # Close the document and quit the Word application
-        doc.Close(False)
-        word.Quit()
-
-        # Return the extracted text
-        return text
-    # Handle exceptions and print an error message if reading fails and returns empty string.
-    except Exception as e:
-        print(f"Error reading DOC {file_path}: {e}")
-        return ""
-
-
-def extract_text_from_files(folder_path):
-
-    # Initialize a list to store data for each file
-    data = []
-
-    # Iterate through unique files in the specified folder
-    for filename in set(os.listdir(folder_path)):
-        # Build the full file path
-        file_path = os.path.join(folder_path, filename)
-        # Extract text based on the file extension
-        if filename.endswith('.pdf'):
-            text = read_pdf(file_path)
-        elif filename.endswith('.docx'):
-            text = read_docx(file_path)
-        elif filename.endswith('.doc'):
-            text = read_doc(file_path)
-        elif filename.endswith('.txt'):
-            text = read_txt(file_path)
-        else:
-            # Skip unsupported file types
-            continue
-        # Append the filename and extracted text to the data list
-        data.append({'resume_file_name': filename, 'resume_file_text': text})
-    # Convert the data into a pandas DataFrame and returns.
-    return pd.DataFrame(data)
-
-def process_resumes(resume_df, job_description):
-
-
-    # Initialize the OpenAI conversation for job description processing
-    conversation_jd = get_conversation_openai(TEMPLATES["job_description"])
-    jd_response = conversation_jd({"job_description_text": job_description})
-    processed_jd = jd_response # Store the processed job description
-
-    # Initialize OpenAI conversations for resume processing and scoring
-    conversation_resume = get_conversation_openai(TEMPLATES["resume"])
-    conversation_score = get_conversation_openai(TEMPLATES["score"])
-
-    # Iterate through each resume in the DataFrame
-    for i in range(len(resume_df)):
-        # Extract the text content of the current resume
-        resume_text = resume_df.loc[i, "resume_file_text"]
-        
-        # Extract key aspects from the resume
-        resume_response = conversation_resume({"resume_text": resume_text})
-        resume_df.loc[i, "resume_key_aspect"] = resume_response
-        
-        # Score the resume based on the processed job description
-        score_response = conversation_score({
-            "resume_text": resume_text,
-            "job_description": processed_jd
-        })
-        resume_df.loc[i, "resume_score"] = score_response
-
-        # Log progress to the console
-        print(f"{i+1}. Working on - ",resume_df["resume_file_name"][i])
-
-    # Return the updated DataFrame
-    return resume_df
-
-def save_results(resume_df):
-
-    # Sort resumes by their scores in descending order
-    resume_df.sort_values(by='resume_score', ascending=False, inplace=True)
-
-    # Extract only the relevant columns for the scorecard
-    scorecard = resume_df[["resume_file_name", "resume_score"]]
-
-    # Determine the path to the user's Downloads folder
-    downloads_folder = os.path.join(os.path.expanduser("~"), "Downloads")
-
-    # Get the current date and time in a formatted string
-    current_time = datetime.now().strftime("%d-%b-%Y_%I-%M-%S_%p")
-
-    # Define the full file path for the output Excel file
-    file_path = os.path.join(downloads_folder, f'resume_scorecard_{str(current_time)}.xlsx')
-
-    # Save the scorecard to an Excel file
-    scorecard.to_excel(file_path, index=False)
-    
-    # Print a confirmation message with the file path
-    print(f"Score Results saved to {file_path}")
-
-
-num_threads = os.cpu_count()
-
-def threaded_resume_processor(resume_queue, job_description, results):
- 
-    # Initialize OpenAI conversations
-    conversation_jd = get_conversation_openai(TEMPLATES["job_description"])
-    conversation_resume = get_conversation_openai(TEMPLATES["resume"])
-    conversation_score = get_conversation_openai(TEMPLATES["score"])
-
-    # Process job description once
-    processed_jd = conversation_jd({"job_description_text": job_description})
-
-    # Process resumes from the queue
-    while not resume_queue.empty():
-        try:
-            index, resume = resume_queue.get()
-            resume_text = resume["resume_file_text"]
-            filename = resume["resume_file_name"]
-            print(f"Processing resume: {filename}")  # Log the current resume being processed
-
-            # Extract key aspects from the resume
-            resume_response = conversation_resume({"resume_text": resume_text})
-
-            # Calculate the resume score based on the processed job description
-            score_response = conversation_score({
-                "resume_text": resume_text,
-                "job_description": processed_jd
-            })
-
-            # Store the results in the thread-safe dictionary
-            results[index] = {
-                "resume_key_aspect": resume_response,
-                "resume_score": score_response
-            }
-        except Exception as e:
-            # Log any errors encountered during processing
-            print(f"Error processing resume: {e}")
-        finally:
-            # Mark the task as done, signaling to the queue
-            resume_queue.task_done()
-
-def process_resumes(resume_df, job_description):
- 
-    # Initialize the queue and results dictionary
-    resume_queue = Queue()
-    results = {}
-
-    # Populate the queue with resume data from the DataFrame
-    for i, resume in resume_df.iterrows():
-        resume_queue.put((i, resume))
-
-    # Number of threads to use for processing
-    threads = []
-    for _ in range(3):  # Adjust the number of threads
-        thread = threading.Thread(target=threaded_resume_processor, args=(resume_queue, job_description, results))
-        thread.start()
-        threads.append(thread)
-
-    # Wait for all threads to finish processing
-    resume_queue.join()
-    for thread in threads:
-        thread.join()
-
-    # Update the DataFrame with the results from the threads
-    for index, result in results.items():
-        resume_df.loc[index, "resume_key_aspect"] = result["resume_key_aspect"]
-        resume_df.loc[index, "resume_score"] = result["resume_score"]
-
-    # Return the updated DataFrame with scores and key aspects
-    return resume_df
-
-# Main Execution Flow
-if __name__ == "__main__":
-    folder_path = select_folder()
-    print(f"The resumes are selected from: {folder_path}")
-    job_description = input("Please enter JOB description: ")
-
-    resume_df = extract_text_from_files(folder_path)
-    resume_df = process_resumes(resume_df, job_description)
-    save_results(resume_df)
