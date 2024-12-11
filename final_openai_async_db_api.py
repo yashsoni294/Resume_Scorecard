@@ -9,11 +9,7 @@ import io
 import zipfile
 import pandas as pd
 import time
-import tkinter as tk
-from tkinter import filedialog
 from dotenv import load_dotenv
-import google.generativeai as genai
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 from datetime import datetime
 import asyncio
