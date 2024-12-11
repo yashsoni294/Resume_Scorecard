@@ -16,8 +16,8 @@ import google.generativeai as genai
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 from datetime import datetime
-import threading
-from queue import Queue
+import asyncio
+import re
 
 # Load API Key
 load_dotenv()
@@ -77,11 +77,12 @@ TEMPLATES = {
         Free from redundant details or assumptions.
         """ ,
 
+
     "resume" : """
         The text below is a resume:
         {resume_text}
 
-        Your task is to extract critical information from the resume, focusing only on its content without making assumptions or adding external details. The extracted details should be structured, concise, and actionable to support effective scoring. Use the categories below for organization:
+        Your task is to extract critical information from the resume, focusing only on its content without making assumptions or adding external details. The extracted details should be structured, concise, and actionable to support effective scoring. Also remember do not rush to give answer, take your time while processing. Use the categories below for organization:
 
         1. Candidate Profile
             1.1 Keywords Identified:
@@ -130,7 +131,7 @@ TEMPLATES = {
 
         """ , 
     "score" : """
-        Your task is to evaluate the alignment between the provided resume and job description by analyzing three critical sections: Candidate Profile, Experience, and Educational Qualifications and Certifications. Based on your evaluation, assign a final score between 0 and 100, reflecting the overall suitability of the candidate for the job.
+        Your task is to evaluate the alignment between the provided resume and job description by analyzing three critical sections: Candidate Profile, Experience, and Educational Qualifications and Certifications. Based on your evaluation, assign a final score between 0 and 100, reflecting the overall suitability of the candidate for the job. Also remember do not rush to score, take your time while processing.
 
         Inputs:
         Resume Text:
@@ -187,8 +188,8 @@ TEMPLATES = {
         Output:
             Provide the final calculated score as a single whole number (0 – 100) with no additional explanation or text. If you are not able to score the resume then you can give 0 score to the resume.
         """
-
 }
+
 
 app = FastAPI()
 
@@ -239,6 +240,22 @@ def get_conversation_openai(template, model="gpt-4o-mini", temperature=0.1, max_
     # Return the nested function for reuse
     return call_openai_model
 
+def clean_text(text):
+    # To Remove HTML tags
+    text = re.sub(r'<[^>]*?>', ' ', text)
+    # To Remove URLs
+    text = re.sub(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', ' ', text)
+    # To Remove special characters
+    text = re.sub(r'[^a-zA-Z0-9 ]', ' ', text)
+    # To Replace multiple spaces with a single space
+    text = re.sub(r'\s{2,}', ' ', text)
+    # To Trim leading and trailing whitespace
+    text = text.strip()
+    # To Remove extra whitespace
+    text = ' '.join(text.split())
+    return text
+
+
 def read_pdf(file: io.BytesIO):
     """
     Extract text from a PDF file using PyPDF2 library.
@@ -268,7 +285,7 @@ def read_pdf(file: io.BytesIO):
         extracted_text += page.extract_text()
     
     # Return the extracted text with leading and trailing whitespaces removed
-    return extracted_text.strip()
+    return clean_text(extracted_text.strip())
 
 def read_docx(file: io.BytesIO):
     """Extract text from a DOCX file."""
@@ -276,7 +293,7 @@ def read_docx(file: io.BytesIO):
     extracted_text = ""
     for paragraph in document.paragraphs:
         extracted_text += paragraph.text + "\n"
-    return extracted_text.strip()
+    return clean_text(extracted_text.strip())
 
 def read_doc(file_path: str):
     """
@@ -289,7 +306,7 @@ def read_doc(file_path: str):
         extracted_text = doc.Content.Text
         doc.Close(False)
         word.Quit()
-        return extracted_text.strip()
+        return clean_text(extracted_text.strip())
     except Exception as e:
         return f"Error processing DOC file: {str(e)}"
 
@@ -297,25 +314,67 @@ def read_txt(file: io.BytesIO):
     """Extract text from a plain text file."""
     try:
         contents = file.read()
-        return contents.decode("utf-8").strip()
+        return clean_text(contents.decode("utf-8").strip())
     except Exception as e:
         return f"Error processing TXT file: {str(e)}"
 
-def threaded_resume_processor(queue, job_description, results):
-    conversation_resume = get_conversation_openai(TEMPLATES["resume"])
-    conversation_score = get_conversation_openai(TEMPLATES["score"])
-    while not queue.empty():
-        filename, data = queue.get()
-        print(f"Processing resume: {filename} \n")
-        resume_response = conversation_resume({"resume_text": data["content"]})
-        results[filename] = {
-            "resume_key_aspect": resume_response,
-            "resume_score": conversation_score({
-                "resume_text": resume_response,
-                "job_description": job_description
-            })
-        }
+conversation_resume = get_conversation_openai(TEMPLATES["resume"])
+conversation_score = get_conversation_openai(TEMPLATES["score"])
 
+async def run_in_executor(func, *args, **kwargs):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, func, *args, **kwargs)
+
+async def async_key_aspect_extractor(filename, data):
+    try:
+        print(f"Extracting key aspects for: {filename} - START")
+        # Assuming conversation_resume is synchronous
+        result = await run_in_executor(conversation_resume, {"resume_text": data["content"]})
+        return filename, result
+    except Exception as e:
+        print(f"Error in key aspect extraction for {filename}: {e}")
+        return filename, None
+
+async def async_resume_scorer(filename, key_aspect, job_description):
+    try:
+        print(f"Scoring resume: {filename} - START")
+        # Assuming conversation_score is synchronous
+        result = await run_in_executor(conversation_score, {
+            "resume_text": key_aspect,
+            "job_description": job_description
+        })
+        return filename, result
+    except Exception as e:
+        print(f"Error in scoring for {filename}: {e}")
+        return filename, None
+
+async def process_resumes_async(response_data, job_description):
+    # Create async tasks for key aspect extraction
+    key_aspect_tasks = [
+        asyncio.create_task(async_key_aspect_extractor(filename, data)) 
+        for filename, data in response_data.items()
+    ]
+    
+    # Wait for all key aspect extraction tasks to complete
+    key_aspects = await asyncio.gather(*key_aspect_tasks, return_exceptions=True)
+    key_aspects_dict = {filename: result for filename, result in key_aspects if result is not None}
+    
+    # Create async tasks for scoring
+    scoring_tasks = [
+        asyncio.create_task(async_resume_scorer(filename, key_aspects_dict.get(filename, ""), job_description)) 
+        for filename in response_data.keys()
+    ]
+    
+    # Wait for all scoring tasks to complete concurrently
+    scores = await asyncio.gather(*scoring_tasks, return_exceptions=True)
+    scores_dict = {filename: result for filename, result in scores if result is not None}
+    
+    # Update response_data with results
+    for filename in response_data.keys():
+        response_data[filename]['key_feature'] = clean_text(key_aspects_dict.get(filename, ""))
+        response_data[filename]['score'] = clean_text(scores_dict.get(filename, ""))
+    
+    return response_data
 
 @app.post("/upload-files/")
 async def upload_files(job_description: str, files: list[UploadFile] = File(...)):
@@ -389,7 +448,7 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
                             text = doc.Content.Text
                             doc.Close()
                             word.Quit()
-                            response_data[original_name] = {"content": text, "file_path": file_path}
+                            response_data[original_name] = {"content": clean_text(text), "file_path": file_path}
                         except Exception as e:
                             response_data[original_name] = {"content": f"Error reading DOC file: {str(e)}", "file_path": file_path}
 
@@ -424,7 +483,7 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
                         text = doc.Content.Text
                         doc.Close()
                         word.Quit()
-                        response_data[file_name] = {"content": text}
+                        response_data[file_name] = {"content": clean_text(text)}
                     except Exception as e:
                         response_data[file_name] = {"content": f"Error reading DOC file: {str(e)}"}
                 
@@ -441,28 +500,7 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
                 "error": str(e)
             }
     print("\n")       
-    resume_queue = Queue()
-    results = {}
-
-    # Populate the queue with resumes
-    for filename, data in response_data.items():
-        resume_queue.put((filename, data))
-
-    # Create and start threads
-    threads = []
-    for _ in range(3):  # Limit to 5 threads or number of resumes
-        thread = threading.Thread(target=threaded_resume_processor, args=(resume_queue, job_description, results))
-        thread.start()
-        threads.append(thread)
-
-    # Wait for all threads to complete
-    for thread in threads:
-        thread.join()
-
-    # Update response_data with results
-    for filename, result in results.items():
-        response_data[filename]['key_feature'] = result['resume_key_aspect']
-        response_data[filename]['score'] = result['resume_score']
+    response_data = await process_resumes_async(response_data, processed_jd)
 
     resume_df = pd.DataFrame(columns=['Resume Name', 'Score'])
     i = 0
