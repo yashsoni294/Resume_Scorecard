@@ -297,7 +297,7 @@ def read_doc(file_path: str):
         # First read the file as binary for blob storage
         with open(file_path, "rb") as doc_file:
             data = doc_file.read()
-            blob_data = psycopg2.Binary(data)
+            blob_data = None
 
         # Now extract text using Word automation
         word = win32com.client.Dispatch("Word.Application")

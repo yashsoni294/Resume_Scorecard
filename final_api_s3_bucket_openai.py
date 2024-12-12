@@ -9,11 +9,7 @@ import io
 import zipfile
 import pandas as pd
 import time
-import tkinter as tk
-from tkinter import filedialog
 from dotenv import load_dotenv
-import google.generativeai as genai
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 from datetime import datetime
 import asyncio
@@ -21,10 +17,18 @@ import re
 import psycopg2
 import shutil
 import utils
+import boto3
+from botocore.exceptions import NoCredentialsError, ClientError
+import os
 
 # Load API Key
 load_dotenv()
 API_KEY = os.getenv("OPENAI_API_KEY")
+
+# AWS Credentials from environment variables
+AWS_ACCESS_KEY_ID = os.getenv('AWS_ACCESS_KEY_ID')
+AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
+AWS_REGION = os.getenv('AWS_REGION', 'ap-south-1')  # Default region if not specified
 
 openai.api_key = API_KEY
 
@@ -98,6 +102,114 @@ def retrieve_resume_blob(unique_id):
             print('Database connection closed.')
 
     return output_path
+
+def create_s3_client():
+    """
+    Create and return an S3 client with configured credentials
+    
+    :return: Boto3 S3 client
+    """
+    return boto3.client(
+        's3',
+        aws_access_key_id=AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+        region_name=AWS_REGION
+    )
+
+def upload_to_s3(local_file_path, bucket_name='yash-soni-db', s3_folder='resume_files/'):
+    """
+    Upload a file to an S3 bucket
+    
+    :param local_file_path: Path to the local file to upload
+    :param bucket_name: Name of the S3 bucket
+    :param s3_folder: Folder path within the bucket (include trailing '/')
+    :return: True if file was uploaded, else False
+    """
+    # Create an S3 client
+    s3 = create_s3_client()
+    
+    try:
+        # Get the filename from the path
+        filename = os.path.basename(local_file_path)
+        
+        # Construct the full S3 key (path) 
+        s3_key = os.path.join(s3_folder, filename)
+        
+        # Upload the file
+        s3.upload_file(local_file_path, bucket_name, s3_key)
+        print(f"Successfully uploaded {filename} to {bucket_name}/{s3_key}")
+        return True
+    
+    except FileNotFoundError:
+        print(f"The file {local_file_path} was not found")
+        return False
+    
+    except NoCredentialsError:
+        print("Credentials not available")
+        return False
+    
+    except ClientError as e:
+        print(f"An error occurred: {e}")
+        return False
+
+def download_from_s3(filename, bucket_name='yash-soni-db', s3_folder='resume_files/', 
+                     local_dir='extracted_files/'):
+    """
+    Download a specific file from S3 bucket
+    
+    :param filename: Name of the file to download
+    :param bucket_name: Name of the S3 bucket
+    :param s3_folder: Folder path within the bucket (include trailing '/')
+    :param local_dir: Local directory to save the downloaded file
+    :return: Path to the downloaded file or None if download fails
+    """
+    # Create an S3 client
+    s3 = create_s3_client()
+    
+    # Create local directory if it doesn't exist
+    os.makedirs(local_dir, exist_ok=True)
+    
+    try:
+        # Construct the full S3 key (path)
+        s3_key = os.path.join(s3_folder, filename)
+        
+        # Local file path
+        local_file_path = os.path.join(local_dir, filename)
+        
+        # Download the file
+        s3.download_file(bucket_name, s3_key, local_file_path)
+        
+        print(f"Successfully downloaded {filename} to {local_file_path}")
+        return local_file_path
+    
+    except ClientError as e:
+        print(f"Error downloading {filename}: {e}")
+        return None
+
+
+def upload_resume_file(filename, directory_path='extracted_files'):
+    """
+    Upload a specific file from a directory to S3
+    
+    :param filename: Name of the file to upload
+    :param directory_path: Path to the directory containing the file
+    :return: True if file was uploaded successfully, False otherwise
+    """
+    # Construct full file path
+    file_path = os.path.join(directory_path, filename)
+    
+    # Check if the file exists
+    if not os.path.exists(file_path):
+        print(f"File {filename} not found in {directory_path}")
+        return False
+    
+    # Check if it's a file (not a directory)
+    if not os.path.isfile(file_path):
+        print(f"{filename} is not a file")
+        return False
+    
+    # Attempt to upload the file
+    return upload_to_s3(file_path)
 
 
 conversation_resume = utils.get_conversation_openai(utils.TEMPLATES["resume"])
@@ -193,8 +305,7 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
                     resume_name VARCHAR(100) ,
                     resume_content TEXT ,
                     resume_key_aspect TEXT ,
-                    score INTEGER ,
-                    blob_data BYTEA 
+                    score INTEGER
                 )
             """)
         conn.commit()
@@ -208,6 +319,7 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
             file_extension = file.filename.split(".")[-1].lower()
 
             # Generate a unique file name using a timestamp
+            time.sleep(0.001)
             timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
             file_name = file.filename
             unique_filename = f"{timestamp}_{file_name}"
@@ -222,6 +334,7 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
                     file_name_list = z.namelist()
                     for original_file_name in file_name_list:
                         # Generate a unique file name for each file in the ZIP
+                        time.sleep(0.001)
                         timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
                         unique_file_name = f"{timestamp}_{original_file_name}"
                         z.extract(original_file_name, extract_path)
@@ -240,60 +353,42 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
                     unique_id = re.match(r'^\d+', file_name).group()
                     resume_name = original_name
                     resume_content = None
-                    blob_data = None
+                    
 
                     if file_name.endswith(".pdf"):
                         with open(file_path, "rb") as pdf_file:
-                            # First read the entire file content as binary
-                            data = pdf_file.read()
-                            # Create blob data from the binary content
-                            blob_data = psycopg2.Binary(data)
-                            # Reset file pointer to start
-                            pdf_file.seek(0)
                             # Now read for text extraction
                             resume_content = utils.read_pdf(pdf_file)
-                            response_data[original_name] = {"content": resume_content, "file_path": unique_id}
+                            response_data[original_name] = {"content": resume_content, "file_path": file_name}
                     
                     # Process TXT files
                     elif file_name.endswith(".txt"):
                         with open(file_path, "rb") as txt_file:
-                            # First read the entire file content as binary
-                            data = txt_file.read()
-                            # Create blob data from the binary content
-                            blob_data = psycopg2.Binary(data)
-                            # Reset file pointer to start
-                            txt_file.seek(0)
                             # Now read for text extraction
                             resume_content = utils.read_txt(txt_file)
-                            response_data[original_name] = {"content": resume_content, "file_path": unique_id}
+                            response_data[original_name] = {"content": resume_content, "file_path": file_name}
 
                     elif file_name.endswith(".docx"):
                         try:
                             with open(file_path, "rb") as docx_file:
-                                # First read the entire file content as binary
-                                data = docx_file.read()
-                                # Create blob data from the binary content
-                                blob_data = psycopg2.Binary(data)
-                                # Reset file pointer to start
-                                docx_file.seek(0)
                                 # Now read for text extraction
                                 resume_content = utils.read_docx(docx_file)
-                                response_data[original_name] = {"content": resume_content, "file_path": unique_id}
+                                response_data[original_name] = {"content": resume_content, "file_path": file_name}
                         except Exception as e:
-                            response_data[original_name] = {"content": f"Error reading DOCX file: {str(e)}", "file_path": unique_id}
+                            response_data[original_name] = {"content": f"Error reading DOCX file: {str(e)}", "file_path": file_name}
 
                     # Process DOC files
                     elif file_name.endswith(".doc"):
-                        resume_content, blob_data = utils.read_doc(file_path)
-                        response_data[original_name] = {"content": resume_content, "file_path": unique_id}
+                        resume_content, _ = utils.read_doc(file_path)
+                        response_data[original_name] = {"content": resume_content, "file_path": file_name}
                 
-                    if resume_content is not None and blob_data is not None:
+                    if resume_content is not None:
                         try:
                             # Insert the data into the database
                             cur.execute("""
-                                INSERT INTO resume_table (unique_id, resume_name, resume_content, resume_key_aspect, score, blob_data)
-                                VALUES (%s, %s, %s, %s, %s, %s)
-                            """, (unique_id, resume_name, resume_content, None, None, blob_data))
+                                INSERT INTO resume_table (unique_id, resume_name, resume_content, resume_key_aspect, score)
+                                VALUES (%s, %s, %s, %s, %s)
+                            """, (unique_id, resume_name, resume_content, None, None))
                             conn.commit()
                             print(f"Successfully stored {resume_name} in database")
                         except Exception as e:
@@ -301,6 +396,10 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
                             conn.rollback()
                     else:
                         print(f"Skipping {resume_name} - No content or blob data available")
+
+                    upload_resume_file(filename=file_name, directory_path='extracted_files')
+                    print("Uploaded to S3 Bucket")
+
 
                     # Clean up the extracted file
                     if os.path.exists(file_path):
@@ -313,7 +412,7 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
                 unique_id = timestamp
                 resume_name = file_name
                 resume_content = None
-                blob_data = None
+
 
                 # Save individual file to extracted_files directory
                 file_content = await file.read()
@@ -325,24 +424,12 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
                 # Process based on file type
                 if file_extension == "pdf":
                     with open(file_path, "rb") as pdf_file:
-                        # First read the entire file content as binary
-                        data = pdf_file.read()
-                        # Create blob data from the binary content
-                        blob_data = psycopg2.Binary(data)
-                        # Reset file pointer to start
-                        pdf_file.seek(0)
                         # Now read for text extraction
                         resume_content = utils.read_pdf(pdf_file)
                         response_data[file_name] = {"content": resume_content}
                 
                 elif file_extension == "txt":
                     with open(file_path, "rb") as txt_file:
-                        # First read the entire file content as binary
-                        data = txt_file.read()
-                        # Create blob data from the binary content
-                        blob_data = psycopg2.Binary(data)
-                        # Reset file pointer to start
-                        txt_file.seek(0)
                         # Now read for text extraction
                         resume_content = utils.read_txt(txt_file)
                         response_data[file_name] = {"content": resume_content}
@@ -351,12 +438,6 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
                 elif file_extension == "docx":
                     try:
                         with open(file_path, "rb") as docx_file:
-                            # First read the entire file content as binary
-                            data = docx_file.read()
-                            # Create blob data from the binary content
-                            blob_data = psycopg2.Binary(data)
-                            # Reset file pointer to start
-                            docx_file.seek(0)
                             # Now read for text extraction
                             resume_content = utils.read_docx(docx_file)
                             response_data[file_name] = {"content": resume_content}
@@ -365,24 +446,29 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
                         response_data[file_name] = {"content": str(e)}
                 
                 elif file_extension == "doc":
-                    resume_content, blob_data = utils.read_doc(file_path)
+                    resume_content, _ = utils.read_doc(file_path)
                     response_data[file_name] = {"content": resume_content}
                 
                 else:
                     # response_data[file_name] = {
-                    #     "error": "Unsupported file type. Supported formats: .pdf, .docx, .doc, .txt, .zip, .rar"
+                    #     "error": "Unsupported file type. Supported formats: .pdf, .d ocx, .doc, .txt, .zip, .rar"
                     # }
                     pass
                 # Add file path to the response data
-                response_data[file_name]["file_path"] = unique_id
+                response_data[file_name]["file_path"] = f"{unique_id}_{resume_name}"
+
+                upload_resume_file(filename = f"{unique_id}_{resume_name}", directory_path='extracted_files')
+                print("Uploaded to S3 Bucket")
             
                 # SQL query to insert data into the database. 
                 cur.execute( 
-                        "INSERT INTO resume_table(unique_id,resume_name,resume_content,blob_data) "
-                        "VALUES(%s,%s,%s,%s)", (unique_id, resume_name, resume_content, blob_data)
+                        "INSERT INTO resume_table(unique_id,resume_name,resume_content) "
+                        "VALUES(%s,%s,%s)", (unique_id, resume_name, resume_content)
                         )
 
                 conn.commit()
+
+                
 
                 # Clean up the extracted file
                 if os.path.exists(file_path):
@@ -403,6 +489,8 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
         resume_key_aspect = value["key_feature"]
         score = value["score"]
         unique_id = value["file_path"]
+        unique_id = re.match(r"^\d{20}", unique_id).group()
+
 
         cur.execute(
                 """
@@ -445,7 +533,8 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
 def download_file(file_path: str):
     """Endpoint to download a file by its name."""
     # file_path = os.path.join("extracted_files", file_name)  # Adjust the path as needed
-    file_path = retrieve_resume_blob(file_path)
+    # file_path = retrieve_resume_blob(file_path)
+    file_path = download_from_s3(file_path)
     if os.path.exists(file_path):
         print("Dowloading the file...") 
         return FileResponse(file_path, media_type='application/octet-stream', filename = file_path.split('_', 2)[-1])
