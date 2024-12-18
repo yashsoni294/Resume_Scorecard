@@ -21,6 +21,10 @@ import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
 import os
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
+import base64
+from pathlib import Path
 
 # Load API Key
 load_dotenv()
@@ -46,7 +50,7 @@ app = FastAPI()
 
 origins = [
     "http://192.168.31.238:3000",  # Your frontend (React/Vite or similar)
-    "https://7a61-2409-40c2-4009-3586-70a3-7974-1e5-3d49.ngrok-free.app",  # Your backend exposed via ngrok
+    "https://1331-2409-40c2-4009-3586-70a3-7974-1e5-3d49.ngrok-free.app ",  # Your backend exposed via ngrok
 ]
  
 # Add CORS middleware to the application
@@ -551,11 +555,30 @@ def download_file(file_path: str):
     # file_path = os.path.join("extracted_files", file_name)  # Adjust the path as needed
     # file_path = retrieve_resume_blob(file_path)
     file_path = download_from_s3(file_path)
-    if os.path.exists(file_path):
-        print("Dowloading the file...") 
-        return FileResponse(file_path, media_type='application/octet-stream', filename = file_path.split('_', 2)[-1])
-    else:
-        return JSONResponse(content={"message": "File not found."}, status_code=404)
+    try:
+        # Read the PDF file as binary
+        with open(file_path, "rb") as pdf_file:
+            pdf_binary = pdf_file.read()
+ 
+        # Encode the binary content to Base64
+        pdf_base64 = base64.b64encode(pdf_binary).decode("utf-8")
+ 
+        # Create a Data URL for the PDF
+        pdf_url = f"data:application/pdf;base64,{pdf_base64}"
+ 
+        # Return the Data URL to the frontend
+        return JSONResponse(content={"pdf_url": pdf_url})
+ 
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="PDF file not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # if os.path.exists(file_path):
+    #     print("Dowloading the file...") 
+    #     return FileResponse(file_path, media_type='application/octet-stream', filename = file_path.split('_', 2)[-1])
+    # else:
+    #     return JSONResponse(content={"message": "File not found."}, status_code=404)
         
 
 @app.post("/download-scorecard")

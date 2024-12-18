@@ -31,21 +31,21 @@ response_data = {
 """
 
 
-def transform_response_data(response_data):
-    new_response_data = []
-    for filename, data in response_data.items():
-        new_response_data.append({
-            "name": filename,
-            "content": data["content"],
-            "file_path": data["file_path"],
-            "key_feature": data["key_feature"],
-            "score": data["score"]
-        })
-    return new_response_data
+# def transform_response_data(response_data):
+#     new_response_data = []
+#     for filename, data in response_data.items():
+#         new_response_data.append({
+#             "name": filename,
+#             "content": data["content"],
+#             "file_path": data["file_path"],
+#             "key_feature": data["key_feature"],
+#             "score": data["score"]
+#         })
+#     return new_response_data
 
-# Usage
-new_response_data = transform_response_data(response_data)
-print(type(new_response_data))
+# # Usage
+# new_response_data = transform_response_data(response_data)
+# print(type(new_response_data))
 
 # import pandas as pd
 # import os
@@ -159,3 +159,55 @@ print(type(new_response_data))
     "score": "0"
   }
 }
+
+# import subprocess
+
+# def extract_text_with_catdoc(file_path):
+#     try:
+#         result = subprocess.run(
+#             ["catdoc", file_path],
+#             stdout=subprocess.PIPE,
+#             stderr=subprocess.PIPE,
+#             text=True
+#         )
+#         if result.returncode != 0:
+#             return f"Error reading file: {result.stderr}"
+#         return result.stdout
+#     except Exception as e:
+#         return f"An error occurred: {str(e)}"
+
+# if __name__ == "__main__":
+#     file_path = "/mnt/c/Users/Asus/Desktop/Code Files/Resume_Scorecard/extracted_files/yash.doc"
+#     text = extract_text_with_catdoc(file_path)
+#     print(text)
+import subprocess
+import os
+
+def convert_doc_with_unoconv(file_path):
+    """
+    Convert a .doc file to .txt using unoconv.
+    :param file_path: Path to the .doc file.
+    :return: Extracted text or an error message.
+    """
+    try:
+        output_dir = os.path.dirname(file_path)
+        result = subprocess.run(
+            ["unoconv", "-f", "txt", file_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        if result.returncode != 0:
+            return f"Error converting file: {result.stderr}"
+
+        txt_file = os.path.splitext(file_path)[0] + ".txt"
+        with open(txt_file, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        return f"An error occurred: {str(e)}"
+
+if __name__ == "__main__":
+    file_path = "/mnt/c/Users/Asus/Desktop/Code Files/Resume_Scorecard/extracted_files/yash.doc"
+    file_path = r"C:\Users\Asus\Desktop\Code Files\Resume_Scorecard\extracted_files\yash.txt"
+    text = convert_doc_with_unoconv(file_path)
+    print(text)

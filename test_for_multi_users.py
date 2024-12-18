@@ -19,8 +19,15 @@ import shutil
 import utils
 import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
-import os
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
+import base64
+from pathlib import Path
+import threading
+
+# Lock for synchronizing access to the filename generation
+filename_lock = threading.Lock()
 
 # Load API Key
 load_dotenv()
@@ -46,7 +53,7 @@ app = FastAPI()
 
 origins = [
     "http://192.168.31.238:3000",  # Your frontend (React/Vite or similar)
-    "https://7a61-2409-40c2-4009-3586-70a3-7974-1e5-3d49.ngrok-free.app",  # Your backend exposed via ngrok
+    "https://1331-2409-40c2-4009-3586-70a3-7974-1e5-3d49.ngrok-free.app ",  # Your backend exposed via ngrok
 ]
  
 # Add CORS middleware to the application
@@ -296,13 +303,11 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
     processed_jd = jd_response
     print("Processing the Job Description...\n")
 
-    # Create extracted_files directory if it doesn't exist
-    extract_path = "extracted_files"
+    # Create a unique directory for each upload session
+    session_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    extract_path = f"extracted_files_{session_id}"
     
-    # Clean the extracted_files directory before processing
-    if os.path.exists(extract_path):
-        shutil.rmtree(extract_path)
-    
+    # Create the unique directory for the session
     os.makedirs(extract_path, exist_ok=True)
 
     try:
@@ -336,11 +341,11 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
             file_extension = file.filename.split(".")[-1].lower()
 
             # Generate a unique file name using a timestamp
-            time.sleep(0.001)
-            timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
-            file_name = file.filename
-            unique_filename = f"{timestamp}_{file_name}"
-            file_path = os.path.join(extract_path, unique_filename)
+            with filename_lock:
+                timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+                file_name = file.filename
+                unique_filename = f"{timestamp}_{file_name}"
+                file_path = os.path.join(extract_path, unique_filename)
 
             if file.content_type == "application/zip" or file_extension == "zip":
                 zip_data = await file.read()
@@ -351,9 +356,9 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
                     file_name_list = z.namelist()
                     for original_file_name in file_name_list:
                         # Generate a unique file name for each file in the ZIP
-                        time.sleep(0.001)
-                        timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
-                        unique_file_name = f"{timestamp}_{original_file_name}"
+                        with filename_lock:
+                            timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+                            unique_file_name = f"{timestamp}_{original_file_name}"
                         z.extract(original_file_name, extract_path)
                         # Rename the extracted file to its unique name
                         os.rename(os.path.join(extract_path, original_file_name),
@@ -414,7 +419,7 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
                     else:
                         print(f"Skipping {resume_name} - No content or blob data available")
 
-                    upload_resume_file(filename=file_name, directory_path='extracted_files')
+                    upload_resume_file(filename=file_name, directory_path=extract_path)
                     print("Uploaded to S3 Bucket")
 
 
@@ -473,7 +478,7 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
                 # Add file path to the response data
                 response_data[file_name]["file_path"] = f"{unique_id}_{resume_name}"
 
-                upload_resume_file(filename = f"{unique_id}_{resume_name}", directory_path='extracted_files')
+                upload_resume_file(filename = f"{unique_id}_{resume_name}", directory_path=extract_path)
                 print("Uploaded to S3 Bucket")
             
                 # SQL query to insert data into the database. 
@@ -521,18 +526,18 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
             # Commit the changes
         conn.commit()
 
-    resume_df = pd.DataFrame(columns=['Resume Name', 'Score'])
-    i = 0
-    for key, value in response_data.items():
-        resume_df.loc[i, "Resume Name"] = key
-        resume_df.loc[i, "Score"] = value["score"]
-        i += 1
+    # resume_df = pd.DataFrame(columns=['Resume Name', 'Score'])
+    # i = 0
+    # for key, value in response_data.items():
+    #     resume_df.loc[i, "Resume Name"] = key
+    #     resume_df.loc[i, "Score"] = value["score"]
+    #     i += 1
 
-    resume_df.sort_values(by='Score', ascending=False, inplace=True)
-    file_path = os.path.join("extracted_files", f'R_Resume_Scorecard.xlsx')
+    # resume_df.sort_values(by='Score', ascending=False, inplace=True)
+    # file_path = os.path.join(extract_path, f'R_Resume_Scorecard.xlsx')
 
-        # Save the scorecard to an Excel file
-    resume_df.to_excel(file_path, index=False)
+    #     # Save the scorecard to an Excel file
+    # resume_df.to_excel(file_path, index=False)
 
     if cur is not None:
         cur.close()
@@ -541,6 +546,9 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
     if conn is not None:
         conn.close()
         print('Database connection closed.')
+
+    # Clean up the unique directory after processing
+    shutil.rmtree(extract_path)
 
     return response_data
 
@@ -551,11 +559,30 @@ def download_file(file_path: str):
     # file_path = os.path.join("extracted_files", file_name)  # Adjust the path as needed
     # file_path = retrieve_resume_blob(file_path)
     file_path = download_from_s3(file_path)
-    if os.path.exists(file_path):
-        print("Dowloading the file...") 
-        return FileResponse(file_path, media_type='application/octet-stream', filename = file_path.split('_', 2)[-1])
-    else:
-        return JSONResponse(content={"message": "File not found."}, status_code=404)
+    try:
+        # Read the PDF file as binary
+        with open(file_path, "rb") as pdf_file:
+            pdf_binary = pdf_file.read()
+ 
+        # Encode the binary content to Base64
+        pdf_base64 = base64.b64encode(pdf_binary).decode("utf-8")
+ 
+        # Create a Data URL for the PDF
+        pdf_url = f"data:application/pdf;base64,{pdf_base64}"
+ 
+        # Return the Data URL to the frontend
+        return JSONResponse(content={"pdf_url": pdf_url})
+ 
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="PDF file not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # if os.path.exists(file_path):
+    #     print("Dowloading the file...") 
+    #     return FileResponse(file_path, media_type='application/octet-stream', filename = file_path.split('_', 2)[-1])
+    # else:
+    #     return JSONResponse(content={"message": "File not found."}, status_code=404)
         
 
 @app.post("/download-scorecard")
