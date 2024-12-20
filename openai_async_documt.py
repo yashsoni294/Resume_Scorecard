@@ -11,6 +11,7 @@ from tkinter import filedialog
 from langchain_core.prompts import PromptTemplate
 from datetime import datetime
 import asyncio
+import re
 
 # Load API Key
 load_dotenv()
@@ -520,6 +521,20 @@ async def async_resume_scorer(filename, key_aspects, processed_jd):
         print(f"Error in scoring for {filename}: {e}")
         return filename, None
 
+def extract_first_two_digit_number(text):
+    """
+    Extract the first two-digit number from the input text.
+
+    Args:
+        text (str): The input text.
+
+    Returns:
+        str or None: The first two-digit number as a string, or None if no two-digit number is found.
+    """
+    # Use regex to find the first two-digit number
+    match = re.search(r'\b\d{2}\b', text)
+    return match.group() if match else "0"
+
 async def process_resumes(resume_df, job_description):
     """
     Asynchronously process resumes by extracting key aspects and calculating scores.
@@ -578,7 +593,7 @@ async def process_resumes(resume_df, job_description):
         
         # Add score if available
         if filename in scores_dict:
-            resume_df.loc[resume_df['resume_file_name'] == filename, 'resume_score'] = scores_dict[filename]
+            resume_df.loc[resume_df['resume_file_name'] == filename, 'resume_score'] = extract_first_two_digit_number(scores_dict[filename])
     
     return resume_df
 

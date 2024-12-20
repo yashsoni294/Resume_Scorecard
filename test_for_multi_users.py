@@ -1,16 +1,10 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse, FileResponse
-from PyPDF2 import PdfReader
-from docx import Document
-import win32com.client
 import os
 import openai
 import io
 import zipfile
-import pandas as pd
-import time
 from dotenv import load_dotenv
-from langchain_core.prompts import PromptTemplate
 from datetime import datetime
 import asyncio
 import re
@@ -23,8 +17,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 import base64
-from pathlib import Path
 import threading
+import logging
+
+# Initialize a logger
+logger = logging.getLogger(__name__)
 
 # Lock for synchronizing access to the filename generation
 filename_lock = threading.Lock()
@@ -290,7 +287,7 @@ async def process_resumes_async(response_data, job_description):
     # Update response_data with results
     for filename in response_data.keys():
         response_data[filename]['key_feature'] = utils.clean_text(key_aspects_dict.get(filename, ""))
-        response_data[filename]['score'] = utils.clean_text(scores_dict.get(filename, ""))
+        response_data[filename]['score'] = utils.extract_first_two_digit_number(scores_dict.get(filename, ""))
     
     return response_data
 
@@ -554,15 +551,19 @@ async def upload_files(job_description: str, files: list[UploadFile] = File(...)
 
 
 @app.post("/download-resume/{file_path}")
-def download_file(file_path: str):
-    """Endpoint to download a file by its name."""
-    # file_path = os.path.join("extracted_files", file_name)  # Adjust the path as needed
-    # file_path = retrieve_resume_blob(file_path)
-    file_path = download_from_s3(file_path)
+async def download_file(file_path: str):
+    """
+    Asynchronous endpoint to download a file by its name.
+    
+    :param file_path: Path of the file to download
+    :return: JSON response with base64 encoded PDF URL
+    """
     try:
-        # Read the PDF file as binary
-        with open(file_path, "rb") as pdf_file:
-            pdf_binary = pdf_file.read()
+        # Download file from S3 asynchronously using run_in_executor
+        file_path = await run_in_executor(download_from_s3, file_path)
+        
+        # Read the PDF file as binary using run_in_executor to avoid blocking
+        pdf_binary = await run_in_executor(lambda: open(file_path, "rb").read())
  
         # Encode the binary content to Base64
         pdf_base64 = base64.b64encode(pdf_binary).decode("utf-8")
@@ -570,20 +571,21 @@ def download_file(file_path: str):
         # Create a Data URL for the PDF
         pdf_url = f"data:application/pdf;base64,{pdf_base64}"
  
-        # Return the Data URL to the frontend
+        # Return the Data URL to the frontend    
         return JSONResponse(content={"pdf_url": pdf_url})
  
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="PDF file not found")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Optional: Clean up the downloaded file
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception as cleanup_error:
+                logger.error(f"Error cleaning up file {file_path}: {cleanup_error}")
 
-    # if os.path.exists(file_path):
-    #     print("Dowloading the file...") 
-    #     return FileResponse(file_path, media_type='application/octet-stream', filename = file_path.split('_', 2)[-1])
-    # else:
-    #     return JSONResponse(content={"message": "File not found."}, status_code=404)
-        
 
 @app.post("/download-scorecard")
 def download_file():

@@ -1,21 +1,11 @@
-from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import JSONResponse, FileResponse
 from PyPDF2 import PdfReader
 from docx import Document
 import win32com.client
 import os
 import openai
 import io
-import zipfile
-import pandas as pd
-import time
-from dotenv import load_dotenv
 from langchain_core.prompts import PromptTemplate
-from datetime import datetime
-import asyncio
 import re
-import psycopg2
-import shutil
 
 
 TEMPLATES = {
@@ -182,6 +172,19 @@ TEMPLATES = {
         """
 }
 
+def extract_first_two_digit_number(text):
+    """
+    Extract the first two-digit number from the input text.
+
+    Args:
+        text (str): The input text.
+
+    Returns:
+        str or None: The first two-digit number as a string, or None if no two-digit number is found.
+    """
+    # Use regex to find the first two-digit number
+    match = re.search(r'\b\d{2}\b', text)
+    return match.group() if match else "0"
 
 
 def get_conversation_openai(template, model="gpt-4o-mini", temperature=0.1, max_tokens=None):
